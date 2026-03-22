@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 
-const API = 'http://167.172.116.247/api';
+const API = '/api';
 
 async function api(path, opts = {}) {
   const r = await fetch(`${API}${path}`, {
