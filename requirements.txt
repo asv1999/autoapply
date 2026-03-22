@@ -1,0 +1,11 @@
+# AutoApply Backend Dependencies
+fastapi==0.115.0
+uvicorn==0.30.0
+pydantic-settings==2.5.0
+httpx==0.27.0
+python-multipart==0.0.9
+python-docx==1.1.0
+playwright==1.48.0
+beautifulsoup4==4.12.3
+apscheduler==3.10.4
+groq==0.12.0
