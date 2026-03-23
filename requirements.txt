@@ -1,4 +1,3 @@
-# AutoApply Backend Dependencies
 fastapi==0.115.0
 uvicorn==0.30.0
 pydantic-settings==2.5.0

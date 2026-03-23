@@ -1,391 +1,315 @@
-"""
-AutoApply — Main FastAPI Application
-Connects all 5 layers: Discovery, Intelligence, Documents, RPA, Learning
-"""
-import os
-import uuid
-import json
-import asyncio
-import logging
+"""AutoApply v3 — Complete API with all 18 endpoints"""
+import os, uuid, json, logging
 from datetime import datetime
-from typing import List, Dict, Optional
 from contextlib import asynccontextmanager
+from typing import List, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from config import settings
-from database import init_db, JobDB, ApplicationDB, RunDB, get_db
-from discovery.engine import DiscoveryEngine
-from intelligence.engine import LLMClient, PlaybookGenerator, ResumeTailor
-from rpa.applicant import RPAApplicant
-from learning.engine import OutcomeTracker, ABTestEngine, FineTuningDataBuilder
+from database import init_db, ProfileDB, JobDB, ApplicationDB, ConnectionDB, RunDB
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─── LIFESPAN ───
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    os.makedirs("data/outputs", exist_ok=True)
-    os.makedirs("data/outputs/resumes", exist_ok=True)
-    os.makedirs("data/outputs/screenshots", exist_ok=True)
-    os.makedirs("data/profiles", exist_ok=True)
+    for d in ["data/outputs/resumes","data/outputs/screenshots","data/profiles"]:
+        os.makedirs(d, exist_ok=True)
     yield
 
-app = FastAPI(title="AutoApply", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="AutoApply", version="3.0.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-)
-
-# Serve generated files
-if os.path.exists("data/outputs"):
-    app.mount("/files", StaticFiles(directory="data/outputs"), name="files")
+def get_llm():
+    from intelligence.engine import LLMClient
+    return LLMClient(settings.GROQ_API_KEY, settings.OLLAMA_HOST)
 
 # ─── MODELS ───
+class ProfileIn(BaseModel):
+    name: str; email: str = ""; phone: str = ""; location: str = ""
+    linkedin_url: str = ""; target_roles: str = ""
+    salary_min: int = 0; salary_max: int = 0
+    resume_bullets: dict = {}; voice_rules: str = ""
+    proof_points: list = []; education: str = ""; skills: list = []
 
-class ProfileCreate(BaseModel):
-    name: str
-    email: str = ""
-    phone: str = ""
-    location: str = ""
-    linkedin_url: str = ""
-    target_roles: str = ""
-    resume_bullets: dict = {}
-    voice_rules: str = ""
-    proof_points: list = []
-    education: str = ""
-    skills: list = []
+class JobIn(BaseModel):
+    title: str; company: str; location: str = ""; url: str = ""
+    requirements: list = []; decision_maker: str = ""; ats_platform: str = ""
 
-class JobInput(BaseModel):
-    title: str
-    company: str
-    location: str = ""
-    url: str = ""
-    requirements: list = []
-    decision_maker: str = ""
-    ats_platform: str = ""
+class OutcomeIn(BaseModel):
+    application_id: int; outcome: str
 
-class OutcomeUpdate(BaseModel):
-    application_id: int
-    outcome: str  # viewed, callback, interview, offer, rejected, ghosted
-
-# ─── HEALTH ───
-
+# ═══ 1. HEALTH ═══
 @app.get("/health")
 async def health():
-    llm = LLMClient(settings.GROQ_API_KEY, settings.OLLAMA_HOST)
-    llm_status = await llm.health_check()
-    return {
-        "status": "ok",
-        "llm": llm_status,
-        "database": "ok",
-    }
+    llm = get_llm(); st = await llm.health()
+    return {"status":"ok","llm":st,"database":"ok","profile_exists":ProfileDB.exists()}
 
-# ─── PROFILE ───
-
+# ═══ 2-4. PROFILE (Page 1: Onboarding) ═══
 @app.post("/api/profile")
-async def create_profile(profile: ProfileCreate):
-    conn = get_db()
-    cur = conn.execute("""
-        INSERT INTO profiles (name, email, phone, location, linkedin_url, target_roles,
-            resume_bullets, voice_rules, proof_points, education, skills)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (profile.name, profile.email, profile.phone, profile.location,
-          profile.linkedin_url, profile.target_roles,
-          json.dumps(profile.resume_bullets), profile.voice_rules,
-          json.dumps(profile.proof_points), profile.education, json.dumps(profile.skills)))
-    conn.commit()
-    pid = cur.lastrowid
-    conn.close()
-    return {"id": pid, "message": "Profile created"}
+async def create_profile(p: ProfileIn):
+    pid = ProfileDB.create(p.dict())
+    return {"id":pid,"message":"Profile created"}
 
-@app.get("/api/profile/{profile_id}")
-async def get_profile(profile_id: int):
-    conn = get_db()
-    row = conn.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(404, "Profile not found")
-    return dict(row)
+@app.get("/api/profile")
+@app.get("/api/profile/{pid}")
+async def get_profile(pid: int = 1):
+    p = ProfileDB.get(pid)
+    if not p: raise HTTPException(404, "Profile not found")
+    return p
+
+@app.put("/api/profile/{pid}")
+async def update_profile(pid: int, data: dict):
+    ProfileDB.update(pid, data)
+    return {"message":"Updated"}
 
 @app.post("/api/profile/upload-resume")
 async def upload_resume(file: UploadFile = File(...)):
     path = f"data/profiles/{file.filename}"
-    with open(path, "wb") as f:
-        content = await file.read()
-        f.write(content)
-    return {"path": path, "filename": file.filename}
+    with open(path, "wb") as f: f.write(await file.read())
+    ProfileDB.update(1, {"resume_template_path": path})
+    return {"path":path,"filename":file.filename}
 
-# ─── LAYER 1: DISCOVERY ───
-
+# ═══ 5-6. DISCOVERY + MATCHING (Page 3: Job Discovery) ═══
 @app.post("/api/discover")
-async def discover_jobs(background_tasks: BackgroundTasks):
-    run_id = str(uuid.uuid4())[:8]
-    RunDB.create(run_id, run_type="manual")
-    
+async def discover(bg: BackgroundTasks):
+    rid = str(uuid.uuid4())[:8]
+    RunDB.create(rid)
     async def _run():
+        from discovery.engine import DiscoveryEngine
         engine = DiscoveryEngine(settings)
         try:
-            stats = await engine.run_full(run_id)
-            RunDB.update(run_id, status="completed", completed_at=datetime.now().isoformat(),
-                        jobs_discovered=stats["total_found"], jobs_new=stats["new_added"])
+            stats = await engine.run_full(rid)
+            RunDB.update(rid, status="completed", completed_at=datetime.now().isoformat(),
+                jobs_discovered=stats["total_found"], jobs_new=stats["new_added"])
+            # Auto-score new jobs
+            await _score_new_jobs()
         except Exception as e:
-            RunDB.update(run_id, status="failed")
-            logger.error(f"Discovery failed: {e}")
-        finally:
-            await engine.cleanup()
-    
-    background_tasks.add_task(_run)
-    return {"run_id": run_id, "status": "started", "message": "Discovery running in background"}
+            RunDB.update(rid, status="failed"); logger.error(f"Discovery: {e}")
+        finally: await engine.cleanup()
+    bg.add_task(_run)
+    return {"run_id":rid,"status":"started"}
+
+async def _score_new_jobs():
+    profile = ProfileDB.get(1)
+    if not profile: return
+    jobs = JobDB.get_unapplied(50)
+    unscored = [j for j in jobs if not j.get("match_score")]
+    if not unscored: return
+    llm = get_llm(); await llm.init()
+    from intelligence.engine import MatchScorer
+    scorer = MatchScorer(llm)
+    scores, _ = await scorer.score_batch(profile, unscored)
+    for jid, data in scores.items():
+        JobDB.update_score(jid, data["score"], data.get("archetype"))
 
 @app.post("/api/jobs/manual")
-async def add_jobs_manually(jobs: List[JobInput]):
-    """Add jobs manually (paste from external search)."""
-    results = JobDB.insert_batch([j.dict() for j in jobs])
-    return results
+async def add_manual_jobs(jobs: List[JobIn]):
+    result = JobDB.insert_batch([j.dict() for j in jobs])
+    # Score them
+    await _score_new_jobs()
+    return result
 
 @app.get("/api/jobs")
-async def get_jobs(status: str = "all", limit: int = 100):
-    if status == "unapplied":
-        return JobDB.get_unapplied(limit)
-    return JobDB.get_all(limit)
+async def get_jobs(status: str = "all", sort: str = "discovered_at", limit: int = 200):
+    if status == "unapplied": return JobDB.get_unapplied(limit)
+    return JobDB.get_all(limit, sort)
 
-@app.get("/api/jobs/stats")
-async def get_job_stats():
-    conn = get_db()
-    total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-    sources = conn.execute("SELECT source, COUNT(*) FROM jobs GROUP BY source").fetchall()
-    conn.close()
-    return {"total": total, "by_source": {r[0]: r[1] for r in sources}}
+@app.get("/api/jobs/{jid}")
+async def get_job(jid: int):
+    j = JobDB.get_by_id(jid)
+    if not j: raise HTTPException(404)
+    # Include application if exists
+    app_data = ApplicationDB.get_by_job(jid)
+    j["application"] = app_data
+    # Include connections
+    j["connections"] = ConnectionDB.get_by_job(jid)
+    return j
 
-# ─── LAYER 2: INTELLIGENCE ───
+@app.post("/api/match-score")
+async def score_jobs():
+    await _score_new_jobs()
+    return {"message":"Scoring complete"}
 
+# ═══ 7-8. PLAYBOOK + TAILOR (Page 4: Resume Studio) ═══
 @app.post("/api/playbook")
-async def generate_playbook(profile_id: int = 1):
-    """Generate archetype playbook from unapplied jobs."""
-    conn = get_db()
-    profile = conn.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,)).fetchone()
-    conn.close()
-    if not profile:
-        raise HTTPException(404, "Profile not found")
-    
+async def gen_playbook():
+    profile = ProfileDB.get(1)
+    if not profile: raise HTTPException(400, "Create profile first")
     jobs = JobDB.get_unapplied(100)
-    if not jobs:
-        raise HTTPException(400, "No unapplied jobs found")
-    
-    llm = LLMClient(settings.GROQ_API_KEY, settings.OLLAMA_HOST)
-    await llm.init()
-    generator = PlaybookGenerator(llm)
-    result = await generator.generate(dict(profile), jobs)
-    
-    # Save playbook
-    run_id = str(uuid.uuid4())[:8]
+    if not jobs: raise HTTPException(400, "No unapplied jobs")
+    llm = get_llm(); await llm.init()
+    from intelligence.engine import PlaybookGenerator
+    gen = PlaybookGenerator(llm)
+    result = await gen.generate(profile, jobs)
+    rid = str(uuid.uuid4())[:8]
+    from database import get_db
     conn = get_db()
-    conn.execute("""
-        INSERT INTO playbooks (run_id, raw_output, model_used, tokens_used)
-        VALUES (?, ?, ?, ?)
-    """, (run_id, result["playbook_text"], result["model"], result["tokens_used"]))
-    conn.commit()
-    conn.close()
-    
-    return {"run_id": run_id, "playbook": result["playbook_text"],
-            "jobs_analyzed": result["job_count"], "tokens": result["tokens_used"]}
+    conn.execute("INSERT INTO playbooks (run_id,raw_output,model_used,tokens_used) VALUES (?,?,?,?)",
+        (rid, result["playbook_text"], "groq", result["tokens"]))
+    conn.commit(); conn.close()
+    return {"run_id":rid,"playbook":result["playbook_text"],"jobs":result["job_count"],"tokens":result["tokens"]}
 
 @app.post("/api/tailor")
-async def tailor_resumes(profile_id: int = 1):
-    """Tailor resumes for all unapplied jobs using latest playbook."""
-    # Get latest playbook
+async def tailor_all():
+    profile = ProfileDB.get(1)
+    if not profile: raise HTTPException(400, "Create profile first")
+    from database import get_db
     conn = get_db()
-    playbook_row = conn.execute("SELECT * FROM playbooks ORDER BY created_at DESC LIMIT 1").fetchone()
-    profile = conn.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,)).fetchone()
+    pb = conn.execute("SELECT raw_output FROM playbooks ORDER BY created_at DESC LIMIT 1").fetchone()
     conn.close()
-    
-    if not playbook_row:
-        raise HTTPException(400, "No playbook found. Generate one first.")
-    if not profile:
-        raise HTTPException(404, "Profile not found")
-    
+    if not pb: raise HTTPException(400, "Generate playbook first")
     jobs = JobDB.get_unapplied(100)
-    if not jobs:
-        raise HTTPException(400, "No unapplied jobs")
-    
-    llm = LLMClient(settings.GROQ_API_KEY, settings.OLLAMA_HOST)
-    await llm.init()
+    if not jobs: raise HTTPException(400, "No unapplied jobs")
+    llm = get_llm(); await llm.init()
+    from intelligence.engine import ResumeTailor
+    from learning.engine import ABTestEngine
     tailor = ResumeTailor(llm)
-    
-    results = await tailor.tailor_batch(playbook_row["raw_output"], jobs)
-    
-    # Save applications
-    run_id = str(uuid.uuid4())[:8]
-    app_ids = []
+    results = await tailor.tailor_batch(pb[0], jobs)
+    rid = str(uuid.uuid4())[:8]
+    aids = []
     for r in results:
-        variant, variant_desc = ABTestEngine.assign_variant(r)
-        app_id = ApplicationDB.create({
-            "job_id": r.get("job_id"),
-            "profile_id": profile_id,
-            "run_id": run_id,
-            "archetype": r.get("archetype"),
-            "tailored_bullets": r.get("tailored_bullets"),
-            "variant": variant,
-            "variant_description": variant_desc,
-        })
-        app_ids.append(app_id)
-    
-    return {"run_id": run_id, "tailored": len(results), "application_ids": app_ids}
+        v, vd = ABTestEngine.assign()
+        aid = ApplicationDB.create({"job_id":r.get("job_id"),"profile_id":1,"run_id":rid,
+            "archetype":r.get("archetype"),"tailored_bullets":r.get("tailored_bullets"),
+            "cover_letter":r.get("cover_letter",""),"variant":v,"variant_description":vd})
+        aids.append(aid)
+    return {"run_id":rid,"tailored":len(results),"application_ids":aids}
 
-# ─── LAYER 3: DOCUMENTS ───
+@app.get("/api/applications")
+async def get_applications(status: str = None, limit: int = 200):
+    return ApplicationDB.get_all(status, limit)
 
-@app.post("/api/generate-docs/{application_id}")
-async def generate_documents(application_id: int):
-    """Generate .docx resume for a specific application."""
-    conn = get_db()
-    app_row = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-    if not app_row:
-        raise HTTPException(404, "Application not found")
-    
-    job = conn.execute("SELECT * FROM jobs WHERE id = ?", (app_row["job_id"],)).fetchone()
-    profile = conn.execute("SELECT * FROM profiles WHERE id = ?", (app_row["profile_id"],)).fetchone()
-    conn.close()
-    
-    # For now, return the tailored content as downloadable text
-    # Full .docx generation would use python-docx with the template
-    bullets = json.loads(app_row["tailored_bullets"]) if app_row["tailored_bullets"] else {}
-    
-    output = f"TAILORED RESUME: {job['title']} at {job['company']}\n{'='*50}\n\n"
-    for section, bullet_list in bullets.items():
-        output += f"[{section.upper()}]\n"
-        if isinstance(bullet_list, list):
-            for i, b in enumerate(bullet_list, 1):
-                output += f"  {i}. {b}\n"
-        output += "\n"
-    
-    filename = f"Resume_{job['company'].replace(' ','_')}_{application_id}.txt"
-    filepath = f"data/outputs/resumes/{filename}"
-    with open(filepath, "w") as f:
-        f.write(output)
-    
-    conn = get_db()
-    conn.execute("UPDATE applications SET resume_path = ? WHERE id = ?", (filepath, application_id))
-    conn.commit()
-    conn.close()
-    
-    return {"path": filepath, "filename": filename}
+@app.get("/api/applications/{aid}")
+async def get_application(aid: int):
+    a = ApplicationDB.get_by_id(aid)
+    if not a: raise HTTPException(404)
+    return a
 
-@app.post("/api/generate-docs/batch")
-async def generate_docs_batch():
-    """Generate documents for all pending applications."""
-    conn = get_db()
-    apps = conn.execute("""
-        SELECT a.id FROM applications a WHERE a.resume_path IS NULL AND a.tailored_bullets IS NOT NULL
-    """).fetchall()
-    conn.close()
-    
-    generated = 0
-    for app_row in apps:
-        try:
-            await generate_documents(app_row[0])
-            generated += 1
-        except:
-            continue
-    
-    return {"generated": generated, "total": len(apps)}
-
-# ─── LAYER 4: RPA ───
-
-@app.post("/api/apply/{application_id}")
-async def apply_to_job(application_id: int, background_tasks: BackgroundTasks):
-    """Auto-apply to a single job."""
-    conn = get_db()
-    app_row = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-    job = conn.execute("SELECT * FROM jobs WHERE id = ?", (app_row["job_id"],)).fetchone()
-    profile = conn.execute("SELECT * FROM profiles WHERE id = ?", (app_row["profile_id"],)).fetchone()
-    conn.close()
-    
-    if not app_row or not job:
-        raise HTTPException(404, "Application or job not found")
-    
+# ═══ 9. AUTO-APPLY (Page 5) ═══
+@app.post("/api/apply/{aid}")
+async def apply_one(aid: int, bg: BackgroundTasks):
+    a = ApplicationDB.get_by_id(aid)
+    if not a: raise HTTPException(404)
+    job = JobDB.get_by_id(a["job_id"])
+    profile = ProfileDB.get(a.get("profile_id",1))
     async def _apply():
-        rpa = RPAApplicant(
-            profile=dict(profile),
-            config={"auto_submit": False, "screenshot": settings.SCREENSHOT_ON_APPLY},
-            headless=settings.HEADLESS_BROWSER
-        )
+        from rpa.applicant import RPAApplicant
+        names = (profile.get("name","") or "").split()
+        p = {**profile, "first_name":names[0] if names else "", "last_name":names[-1] if len(names)>1 else ""}
+        rpa = RPAApplicant(p, {"auto_submit":False}, settings.HEADLESS_BROWSER)
         try:
-            result = await rpa.apply_to_job(dict(job), app_row["resume_path"])
-            ApplicationDB.update_status(application_id, result.get("status", "failed"), result.get("error"))
-        except Exception as e:
-            ApplicationDB.update_status(application_id, "failed", str(e))
-        finally:
-            await rpa.cleanup()
-    
-    background_tasks.add_task(_apply)
-    return {"message": "Application started", "application_id": application_id}
+            r = await rpa.apply_one(job, a.get("resume_path",""))
+            ApplicationDB.update_status(aid, r.get("status","failed"), r.get("error"))
+        except Exception as e: ApplicationDB.update_status(aid, "failed", str(e))
+        finally: await rpa.cleanup()
+    bg.add_task(_apply)
+    return {"message":"Applying","application_id":aid}
 
 @app.post("/api/apply/batch")
-async def apply_batch(background_tasks: BackgroundTasks, limit: int = 10):
-    """Auto-apply to all pending applications."""
+async def apply_batch(bg: BackgroundTasks, limit: int = 10):
+    apps = ApplicationDB.get_all("pending", limit)
+    return {"queued":len(apps),"message":f"Queued {len(apps)} applications"}
+
+# ═══ 10. CONNECTIONS (Page 5: Insider Connect) ═══
+@app.post("/api/connections/{jid}")
+async def find_connections(jid: int):
+    job = JobDB.get_by_id(jid)
+    if not job: raise HTTPException(404)
+    profile = ProfileDB.get(1)
+    if not profile: raise HTTPException(400, "Create profile first")
+    llm = get_llm(); await llm.init()
+    from intelligence.engine import ConnectionFinder
+    finder = ConnectionFinder(llm)
+    result = await finder.find(profile, job)
+    cid = ConnectionDB.create({"job_id":jid,"contact_title":result["contact_title"],
+        "outreach_message":result["outreach_message"]})
+    # Update job decision maker
+    from database import get_db
     conn = get_db()
-    apps = conn.execute("""
-        SELECT a.id, a.job_id, a.resume_path, a.profile_id
-        FROM applications a
-        WHERE a.apply_status = 'pending' AND a.resume_path IS NOT NULL
-        LIMIT ?
-    """, (limit,)).fetchall()
-    conn.close()
-    
-    return {"queued": len(apps), "message": f"Applying to {len(apps)} jobs in background"}
+    conn.execute("UPDATE jobs SET decision_maker=? WHERE id=?", (result["contact_title"], jid))
+    conn.commit(); conn.close()
+    return {"connection_id":cid, **result}
 
-# ─── LAYER 5: LEARNING ───
+@app.get("/api/connections/{jid}")
+async def get_connections(jid: int):
+    return ConnectionDB.get_by_job(jid)
 
+# ═══ 11-12. ANALYTICS + LEARNING (Page 6) ═══
 @app.post("/api/outcome")
-async def update_outcome(update: OutcomeUpdate):
-    OutcomeTracker.update(update.application_id, update.outcome)
-    return {"message": "Outcome updated"}
+async def update_outcome(data: OutcomeIn):
+    ApplicationDB.update_outcome(data.application_id, data.outcome)
+    return {"message":"Updated"}
 
 @app.get("/api/analytics")
-async def get_analytics():
-    return {
-        "stats": ApplicationDB.get_stats(),
-        "by_archetype": OutcomeTracker.get_performance_by_archetype(),
-        "ab_test": ABTestEngine.get_report(),
-    }
+async def analytics():
+    from learning.engine import ABTestEngine
+    return {"stats":ApplicationDB.get_stats(), **ABTestEngine.report()}
 
 @app.get("/api/analytics/proof-points")
-async def get_proof_point_analysis():
-    return OutcomeTracker.get_best_proof_points()
+async def proof_points():
+    from learning.engine import OutcomeTracker
+    return OutcomeTracker.get_proof_points()
 
 @app.post("/api/learning/export")
-async def export_training_data():
-    count = FineTuningDataBuilder.export_jsonl()
-    return {"exported": count, "path": "data/fine_tuning_data.jsonl"}
+async def export_training():
+    from learning.engine import FineTuningExporter
+    n = FineTuningExporter.export_jsonl()
+    return {"exported":n,"path":"data/fine_tuning.jsonl"}
 
-# ─── DASHBOARD STATS ───
-
+# ═══ DASHBOARD ═══
 @app.get("/api/dashboard")
 async def dashboard():
-    stats = ApplicationDB.get_stats()
-    conn = get_db()
-    total_jobs = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-    recent_runs = conn.execute("SELECT * FROM runs ORDER BY started_at DESC LIMIT 5").fetchall()
-    conn.close()
-    
     return {
-        "total_jobs_discovered": total_jobs,
-        "applications": stats,
-        "recent_runs": [dict(r) for r in recent_runs],
-        "model": settings.GROQ_MODEL,
+        "total_jobs": JobDB.count(),
+        "applications": ApplicationDB.get_stats(),
+        "recent_runs": RunDB.get_recent(5),
+        "profile_exists": ProfileDB.exists(),
     }
 
-# ─── RUN ───
+# ═══ DOCUMENT GENERATION ═══
+@app.post("/api/generate-docs/{aid}")
+async def gen_docs(aid: int):
+    a = ApplicationDB.get_by_id(aid)
+    if not a: raise HTTPException(404)
+    job = JobDB.get_by_id(a["job_id"])
+    bullets = a.get("tailored_bullets",{})
+    if isinstance(bullets, str):
+        try: bullets = json.loads(bullets)
+        except: bullets = {}
+    output = f"TAILORED RESUME: {job['title']} at {job['company']}\n{'='*50}\n\n"
+    for sec, blist in bullets.items():
+        output += f"[{sec.upper()}]\n"
+        if isinstance(blist, list):
+            for i,b in enumerate(blist,1): output += f"  {i}. {b}\n"
+        output += "\n"
+    if a.get("cover_letter"):
+        output += f"\nCOVER LETTER:\n{a['cover_letter']}\n"
+    fn = f"Resume_{job['company'].replace(' ','_')}_{aid}.txt"
+    fp = f"data/outputs/resumes/{fn}"
+    with open(fp,"w") as f: f.write(output)
+    from database import get_db
+    conn = get_db()
+    conn.execute("UPDATE applications SET resume_path=? WHERE id=?", (fp, aid))
+    conn.commit(); conn.close()
+    return {"path":fp,"filename":fn,"content":output}
+
+@app.post("/api/generate-docs/batch")
+async def gen_docs_batch():
+    from database import get_db
+    conn = get_db()
+    apps = conn.execute("SELECT id FROM applications WHERE resume_path IS NULL AND tailored_bullets IS NOT NULL").fetchall()
+    conn.close()
+    generated = 0
+    for row in apps:
+        try: await gen_docs(row[0]); generated += 1
+        except: continue
+    return {"generated":generated,"total":len(apps)}
 
 if __name__ == "__main__":
     import uvicorn
