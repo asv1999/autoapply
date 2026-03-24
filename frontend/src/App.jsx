@@ -259,7 +259,7 @@ function ResumeStudio({ applications }) {
                   <StatusBadge status={a.apply_status} />
                   <OutcomeBadge outcome={a.outcome} />
                   {hasContent && <span style={s.badge('#d4edda','#155724')}>tailored</span>}
-                  {a.resume_path && <span style={s.badge('#cce5ff','#004085')}>.docx ready</span>}
+                  {a.resume_path && a.resume_path.endsWith('.docx') && <span style={s.badge('#cce5ff','#004085')}>.docx ready</span>}
                 </div>
               </div>
               <div style={{display:'flex',gap:6}}>
@@ -313,7 +313,7 @@ function AutoApply({ applications }) {
       {pending.slice(0,20).map(a => <div key={a.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0',borderBottom:'1px solid #f1f3f5'}}>
         <div><div style={{fontSize:13,fontWeight:600}}>{a.title}</div><div style={{fontSize:11,color:'#6c757d'}}>{a.company} · {a.location}</div></div>
         <div style={{display:'flex',gap:6}}>
-          {a.resume_path && <span style={s.badge('#d4edda','#155724')}>.docx</span>}
+          {a.resume_path && a.resume_path.endsWith('.docx') && <span style={s.badge('#d4edda','#155724')}>.docx</span>}
           {a.url && <a href={a.url} target="_blank" rel="noreferrer" style={s.btnO('#28a745')}>Open page</a>}
         </div>
       </div>)}
