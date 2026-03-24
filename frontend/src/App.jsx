@@ -492,7 +492,7 @@ export default function App() {
       if (type === 'discover') { const r = await api('/discover', {method:'POST'}); setStatus(`Discovery started: ${r.run_id}`); }
       else if (type === 'playbook') { const r = await api('/playbook', {method:'POST'}); setStatus(`Playbook ready: ${r.jobs} jobs analyzed`); }
       else if (type === 'tailor') { const r = await api('/tailor', {method:'POST'}); setStatus(`Tailored ${r.tailored} resumes`); }
-      else if (type === 'docs') { const r = await api('/generate-docs/batch', {method:'POST'}); setStatus(`Generated ${r.generated} documents`); }
+      else if (type === 'docs') { const r = await api('/docs-batch', {method:'POST'}); setStatus(`Generated ${r.generated} documents`); }
       setTimeout(refresh, 2000);
     } catch (e) { setStatus(`Error: ${e.message}`); }
     setLoading(p => ({...p, [type]: false}));
