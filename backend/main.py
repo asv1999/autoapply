@@ -273,31 +273,81 @@ async def dashboard():
     }
 
 # ═══ DOCUMENT GENERATION ═══
+SECTION_NAMES = {
+    "digitech": "Digitech Services",
+    "asu": "Arizona State University",
+    "vaxom": "Vaxom Packaging",
+    "nccl": "National Commodities Clearing",
+    "vertiv": "Vertiv (Capstone)",
+    "km_capital": "KM Capital Partners",
+    "scdi": "Supply Chain DI Platform",
+    "gcn": "Global Careers Network",
+}
+
 @app.post("/api/generate-docs/{aid}")
 async def gen_docs(aid: int):
     a = ApplicationDB.get_by_id(aid)
     if not a: raise HTTPException(404)
     job = JobDB.get_by_id(a["job_id"])
-    bullets = a.get("tailored_bullets",{})
+    profile = ProfileDB.get(a.get("profile_id", 1))
+    bullets = a.get("tailored_bullets", {})
     if isinstance(bullets, str):
         try: bullets = json.loads(bullets)
         except: bullets = {}
-    output = f"TAILORED RESUME: {job['title']} at {job['company']}\n{'='*50}\n\n"
-    for sec, blist in bullets.items():
-        output += f"[{sec.upper()}]\n"
-        if isinstance(blist, list):
-            for i,b in enumerate(blist,1): output += f"  {i}. {b}\n"
-        output += "\n"
-    if a.get("cover_letter"):
-        output += f"\nCOVER LETTER:\n{a['cover_letter']}\n"
-    fn = f"Resume_{job['company'].replace(' ','_')}_{aid}.txt"
+
+    company_safe = re.sub(r'[^\w\s-]', '', job.get('company', 'Company')).replace(' ', '_')
+    candidate_name = (profile.get('name', 'Atharva_Vaidya') if profile else 'Atharva_Vaidya').replace(' ', '_')
+    fn = f"Resume_{candidate_name}_{company_safe}.docx"
     fp = f"data/outputs/resumes/{fn}"
-    with open(fp,"w") as f: f.write(output)
+
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        doc = Document()
+        # Title
+        title = doc.add_heading(f"{job.get('title', '')} at {job.get('company', '')}", level=1)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        # Bullets sections
+        has_bullets = any(isinstance(v, list) and len(v) > 0 for v in bullets.values())
+        if has_bullets:
+            doc.add_heading("Tailored Resume Bullets", level=2)
+            for sec, blist in bullets.items():
+                if not isinstance(blist, list) or not blist: continue
+                sec_heading = doc.add_paragraph()
+                run = sec_heading.add_run(SECTION_NAMES.get(sec, sec.upper()))
+                run.bold = True
+                run.font.size = Pt(11)
+                for b in blist:
+                    p = doc.add_paragraph(style='List Bullet')
+                    p.add_run(b)
+        # Cover letter
+        if a.get("cover_letter"):
+            doc.add_page_break()
+            doc.add_heading("Cover Letter", level=2)
+            for para in a["cover_letter"].split("\n"):
+                if para.strip():
+                    doc.add_paragraph(para.strip())
+        doc.save(fp)
+    except Exception as e:
+        logger.error(f"docx generation failed: {e}, falling back to txt")
+        fn = fn.replace('.docx', '.txt')
+        fp = fp.replace('.docx', '.txt')
+        output = f"TAILORED RESUME: {job.get('title','')} at {job.get('company','')}\n{'='*50}\n\n"
+        for sec, blist in bullets.items():
+            output += f"[{SECTION_NAMES.get(sec, sec.upper())}]\n"
+            if isinstance(blist, list):
+                for i, b in enumerate(blist, 1): output += f"  {i}. {b}\n"
+            output += "\n"
+        if a.get("cover_letter"):
+            output += f"\nCOVER LETTER:\n{a['cover_letter']}\n"
+        with open(fp, "w") as f: f.write(output)
+
     from database import get_db
     conn = get_db()
     conn.execute("UPDATE applications SET resume_path=? WHERE id=?", (fp, aid))
     conn.commit(); conn.close()
-    return {"path":fp,"filename":fn,"content":output}
+    return {"path": fp, "filename": fn}
 
 @app.post("/api/generate-docs/batch")
 async def gen_docs_batch():
@@ -309,7 +359,89 @@ async def gen_docs_batch():
     for row in apps:
         try: await gen_docs(row[0]); generated += 1
         except: continue
-    return {"generated":generated,"total":len(apps)}
+    return {"generated": generated, "total": len(apps)}
+
+# Alias used by frontend
+@app.post("/api/docs-batch")
+async def docs_batch():
+    return await gen_docs_batch()
+
+# ═══ ONE-CLICK PIPELINE ═══
+@app.post("/api/pipeline")
+async def run_pipeline(bg: BackgroundTasks):
+    rid = str(uuid.uuid4())[:8]
+    RunDB.create(rid, rtype="full_pipeline")
+    async def _run():
+        # Step 1: Discover
+        from discovery.engine import DiscoveryEngine
+        engine = DiscoveryEngine(settings)
+        try:
+            stats = await engine.run_full(rid)
+            RunDB.update(rid, jobs_discovered=stats["total_found"], jobs_new=stats["new_added"])
+        except Exception as e:
+            logger.error(f"Pipeline discover: {e}")
+        finally:
+            try: await engine.cleanup()
+            except: pass
+        # Step 2: Score
+        await _score_new_jobs()
+        # Step 3: Playbook
+        profile = ProfileDB.get(1)
+        jobs = JobDB.get_unapplied(100)
+        pb_text = None
+        if profile and jobs:
+            try:
+                llm = get_llm(); await llm.init()
+                from intelligence.engine import PlaybookGenerator
+                gen = PlaybookGenerator(llm)
+                pb_result = await gen.generate(profile, jobs)
+                pb_text = pb_result["playbook_text"]
+                from database import get_db
+                conn = get_db()
+                conn.execute("INSERT INTO playbooks (run_id,raw_output,model_used,tokens_used) VALUES (?,?,?,?)",
+                    (rid, pb_text, "groq", pb_result["tokens"]))
+                conn.commit(); conn.close()
+            except Exception as e:
+                logger.error(f"Pipeline playbook: {e}")
+        # Step 4: Tailor
+        if pb_text is None:
+            from database import get_db
+            conn = get_db()
+            pb_row = conn.execute("SELECT raw_output FROM playbooks ORDER BY created_at DESC LIMIT 1").fetchone()
+            conn.close()
+            if pb_row: pb_text = pb_row[0]
+        jobs2 = JobDB.get_unapplied(100)
+        tailored = 0
+        if pb_text and jobs2:
+            try:
+                llm2 = get_llm(); await llm2.init()
+                from intelligence.engine import ResumeTailor
+                from learning.engine import ABTestEngine
+                tailor = ResumeTailor(llm2)
+                results = await tailor.tailor_batch(pb_text, jobs2)
+                for r in results:
+                    v, vd = ABTestEngine.assign()
+                    ApplicationDB.create({"job_id": r.get("job_id"), "profile_id": 1, "run_id": rid,
+                        "archetype": r.get("archetype"), "tailored_bullets": r.get("tailored_bullets"),
+                        "cover_letter": r.get("cover_letter", ""), "variant": v, "variant_description": vd})
+                    tailored += 1
+                RunDB.update(rid, jobs_tailored=tailored)
+            except Exception as e:
+                logger.error(f"Pipeline tailor: {e}")
+        # Step 5: Generate docs
+        try:
+            from database import get_db
+            conn = get_db()
+            doc_apps = conn.execute("SELECT id FROM applications WHERE resume_path IS NULL AND tailored_bullets IS NOT NULL").fetchall()
+            conn.close()
+            for row in doc_apps:
+                try: await gen_docs(row[0])
+                except: continue
+        except Exception as e:
+            logger.error(f"Pipeline gen_docs: {e}")
+        RunDB.update(rid, status="completed", completed_at=datetime.now().isoformat())
+    bg.add_task(_run)
+    return {"run_id": rid, "status": "started", "steps": ["discover", "score", "playbook", "tailor", "generate_docs"]}
 
 if __name__ == "__main__":
     import uvicorn

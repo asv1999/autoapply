@@ -104,7 +104,7 @@ class PlaybookGenerator:
 
 class ResumeTailor:
     def __init__(self, llm): self.llm = llm
-    async def tailor_batch(self, playbook, jobs, batch_size=10):
+    async def tailor_batch(self, playbook, jobs, batch_size=3):
         results = []
         for i in range(0, len(jobs), batch_size):
             results.extend(await self._batch(playbook, jobs[i:i+batch_size], i))
@@ -112,10 +112,10 @@ class ResumeTailor:
     async def _batch(self, playbook, jobs, si):
         jl = "\n\n".join([f"JOB {si+i+1} (id={j.get('id','?')}): {j.get('title','')} @ {j.get('company','')}\nReqs: {', '.join(j.get('requirements',[])) if isinstance(j.get('requirements'),list) else j.get('requirements','')}" for i,j in enumerate(jobs)])
         r = await self.llm.generate(f"Resume tailor. {CONTENT_OS}",
-            f"PLAYBOOK:\n{playbook[:6000]}\n\nJOBS ({len(jobs)}):\n{jl}\n\nFor EACH job output:\n---JOB id=[ID]---\nArchetype: ...\n[digitech] 1. ... 2. ...\n[asu] 1. ... 2. ... 3. ...\n[vaxom] 1. ... 2. ...\n[nccl] 1. ... 2. ...\n[vertiv] 1. ...\n[km_capital] 1. ...\n[scdi] 1. ... 2. ...\n[gcn] 1. ... 2. ...\n\nCOVER LETTER:\n[4 paragraphs prose]\n\nOutput ALL {len(jobs)} jobs.", 8000)
+            f"PLAYBOOK:\n{playbook[:4000]}\n\nJOBS ({len(jobs)}):\n{jl}\n\nFor EACH job output one complete block. Use EXACTLY this format:\n---JOB id=[ID]---\nArchetype: [archetype label]\n[digitech] 1. [bullet] 2. [bullet]\n[asu] 1. [bullet] 2. [bullet] 3. [bullet]\n[vaxom] 1. [bullet] 2. [bullet]\n[nccl] 1. [bullet] 2. [bullet]\n[vertiv] 1. [bullet]\n[km_capital] 1. [bullet]\n[scdi] 1. [bullet] 2. [bullet]\n[gcn] 1. [bullet] 2. [bullet]\nCOVER LETTER FOR [COMPANY NAME]:\n[Paragraph 1]\n[Paragraph 2]\n[Paragraph 3]\n[Paragraph 4]\n\nWrite ALL {len(jobs)} job blocks completely. Every section must have at least 1 real bullet.", 8192)
         return self._parse(r["text"], jobs, si)
     def _parse(self, text, jobs, si):
-        blocks = re.split(r'---JOB\s+(?:id=)?[\d?]+---', text)
+        blocks = re.split(r'-{2,3}\s*JOB\s+(?:id=)?[\d?]+\s*-{2,3}', text)
         blocks = [b.strip() for b in blocks if b.strip()]
         results = []
         for i, job in enumerate(jobs):
@@ -125,16 +125,27 @@ class ResumeTailor:
             in_cl = False
             for line in block.split("\n"):
                 l = line.strip()
-                if "COVER LETTER" in l.upper(): in_cl = True; continue
+                if not l:
+                    if in_cl: cl_text += "\n"
+                    continue
+                if re.match(r'^COVER LETTER', l, re.IGNORECASE): in_cl = True; continue
                 if in_cl:
-                    if l.startswith("[") and not l.startswith("[digitech"): continue
+                    # Skip any section headers that might appear after cover letter
+                    if re.match(r'^\[\w+\]\s*(?:\d+\.)?', l): continue
                     cl_text += l + "\n"; continue
                 sm = re.match(r'^\[(\w+)\]', l)
-                if sm: cur = sm.group(1); bullets[cur] = []; in_cl = False
+                if sm:
+                    cur = sm.group(1); bullets[cur] = []; in_cl = False
+                    # Handle bullets on same line: [digitech] 1. bullet1 2. bullet2
+                    rest = l[sm.end():].strip()
+                    if rest:
+                        for part in re.split(r'\s+(?=\d+\.)', rest):
+                            bt = re.sub(r'^\d+\.\s*', '', part).strip()
+                            if bt: bullets[cur].append(bt)
                 elif cur and re.match(r'^\d+\.', l):
                     bt = re.sub(r'^\d+\.\s*', '', l).strip()
                     if bt: bullets[cur].append(bt)
-            am = re.search(r'Archetype:\s*(.+)', block)
+            am = re.search(r'^Archetype:\s*(.+)', block, re.MULTILINE)
             results.append({"job_id":job.get("id"),"title":job.get("title",""),"company":job.get("company",""),
                 "archetype":am.group(1).strip() if am else "Unknown",
                 "tailored_bullets":bullets,"cover_letter":cl_text.strip()})
