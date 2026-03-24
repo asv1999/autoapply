@@ -110,13 +110,55 @@ class ResumeTailor:
             results.extend(await self._batch(playbook, jobs[i:i+batch_size], i))
         return results
     async def _batch(self, playbook, jobs, si):
-        jl = "\n\n".join([f"JOB {si+i+1} (id={j.get('id','?')}): {j.get('title','')} @ {j.get('company','')}\nReqs: {', '.join(j.get('requirements',[])) if isinstance(j.get('requirements'),list) else j.get('requirements','')}" for i,j in enumerate(jobs)])
-        r = await self.llm.generate(f"Resume tailor. {CONTENT_OS}",
-            f"PLAYBOOK:\n{playbook[:4000]}\n\nJOBS ({len(jobs)}):\n{jl}\n\nFor EACH job output one complete block. Use EXACTLY this format:\n---JOB id=[ID]---\nArchetype: [archetype label]\n[digitech] 1. [bullet] 2. [bullet]\n[asu] 1. [bullet] 2. [bullet] 3. [bullet]\n[vaxom] 1. [bullet] 2. [bullet]\n[nccl] 1. [bullet] 2. [bullet]\n[vertiv] 1. [bullet]\n[km_capital] 1. [bullet]\n[scdi] 1. [bullet] 2. [bullet]\n[gcn] 1. [bullet] 2. [bullet]\nCOVER LETTER FOR [COMPANY NAME]:\n[Paragraph 1]\n[Paragraph 2]\n[Paragraph 3]\n[Paragraph 4]\n\nWrite ALL {len(jobs)} job blocks completely. Every section must have at least 1 real bullet.", 8192)
+        # Use simple numbered entries - avoid parenthetical IDs that confuse delimiters
+        jl = "\n\n".join([
+            f"POSITION_{i+1}: {j.get('title','')} at {j.get('company','')}\n"
+            f"Requirements: {', '.join(j.get('requirements',[])) if isinstance(j.get('requirements'),list) else j.get('requirements','')}"
+            for i, j in enumerate(jobs)
+        ])
+        # Use ###BLOCK_N### delimiters — unambiguous, the LLM just increments N
+        sep_example = "\n".join([f"###BLOCK_{n+1}###" for n in range(len(jobs))])
+        prompt = (
+            f"PLAYBOOK:\n{playbook[:4000]}\n\n"
+            f"POSITIONS TO TAILOR ({len(jobs)}):\n{jl}\n\n"
+            f"Output one block per position using EXACTLY these separators: {sep_example.replace(chr(10),', ')}\n\n"
+            f"BLOCK FORMAT (copy exactly, fill in real content):\n"
+            f"###BLOCK_1###\n"
+            f"Archetype: Strategy & Ops\n"
+            f"[digitech] 1. Led X to achieve Y by doing Z 2. Drove W resulting in V\n"
+            f"[asu] 1. bullet 2. bullet 3. bullet\n"
+            f"[vaxom] 1. bullet 2. bullet\n"
+            f"[nccl] 1. bullet 2. bullet\n"
+            f"[vertiv] 1. bullet\n"
+            f"[km_capital] 1. bullet\n"
+            f"[scdi] 1. bullet 2. bullet\n"
+            f"[gcn] 1. bullet 2. bullet\n"
+            f"COVER LETTER FOR {jobs[0].get('company','Company') if jobs else 'Company'}:\n"
+            f"Paragraph 1 text here.\nParagraph 2 text here.\nParagraph 3 text here.\nParagraph 4 text here.\n\n"
+            f"###BLOCK_2###\n[same structure for position 2]\n\n"
+            f"Write ALL {len(jobs)} blocks with real bullets (not placeholders). Mirror JD language. Keep all metrics."
+        )
+        r = await self.llm.generate(f"Resume tailor. {CONTENT_OS}", prompt, 8192)
         return self._parse(r["text"], jobs, si)
     def _parse(self, text, jobs, si):
-        blocks = re.split(r'-{2,3}\s*JOB\s+(?:id=)?[\d?]+\s*-{2,3}', text)
-        blocks = [b.strip() for b in blocks if b.strip()]
+        # Try delimiter patterns in priority order — handle any LLM output format
+        blocks = None
+        for pattern in [
+            r'###BLOCK_\d+###',             # New preferred format
+            r'-{2,}\s*JOB[^\n]{0,60}-{2,}', # Old: ---JOB 1 (id=99)--- or ---JOB id=99---
+            r'={3,}\s*(?:JOB|BLOCK)[^\n]*={3,}',  # ===JOB 1===
+        ]:
+            parts = re.split(pattern, text, flags=re.IGNORECASE)
+            if len(parts) > 1:
+                blocks = [b.strip() for b in parts if b.strip()]
+                break
+        # Last-resort: split on Archetype: lines (one block per job)
+        if not blocks or len(blocks) < len(jobs):
+            arch_blocks = re.split(r'\n(?=Archetype:\s)', text)
+            if len(arch_blocks) >= len(jobs):
+                blocks = [b.strip() for b in arch_blocks if b.strip()]
+        if not blocks:
+            blocks = []
         results = []
         for i, job in enumerate(jobs):
             block = blocks[i] if i < len(blocks) else ""
@@ -128,10 +170,10 @@ class ResumeTailor:
                 if not l:
                     if in_cl: cl_text += "\n"
                     continue
-                if re.match(r'^COVER LETTER', l, re.IGNORECASE): in_cl = True; continue
+                if re.match(r'^COVER LETTER', l, re.IGNORECASE):
+                    in_cl = True; continue
                 if in_cl:
-                    # Skip any section headers that might appear after cover letter
-                    if re.match(r'^\[\w+\]\s*(?:\d+\.)?', l): continue
+                    if re.match(r'^\[\w+\]', l): continue  # skip stray section tags in CL
                     cl_text += l + "\n"; continue
                 sm = re.match(r'^\[(\w+)\]', l)
                 if sm:
@@ -141,14 +183,19 @@ class ResumeTailor:
                     if rest:
                         for part in re.split(r'\s+(?=\d+\.)', rest):
                             bt = re.sub(r'^\d+\.\s*', '', part).strip()
-                            if bt: bullets[cur].append(bt)
+                            if bt and len(bt) > 5: bullets[cur].append(bt)
                 elif cur and re.match(r'^\d+\.', l):
                     bt = re.sub(r'^\d+\.\s*', '', l).strip()
-                    if bt: bullets[cur].append(bt)
+                    if bt and len(bt) > 5: bullets[cur].append(bt)
             am = re.search(r'^Archetype:\s*(.+)', block, re.MULTILINE)
-            results.append({"job_id":job.get("id"),"title":job.get("title",""),"company":job.get("company",""),
-                "archetype":am.group(1).strip() if am else "Unknown",
-                "tailored_bullets":bullets,"cover_letter":cl_text.strip()})
+            results.append({
+                "job_id": job.get("id"),
+                "title": job.get("title", ""),
+                "company": job.get("company", ""),
+                "archetype": am.group(1).strip() if am else "Unknown",
+                "tailored_bullets": bullets,
+                "cover_letter": cl_text.strip()
+            })
         return results
 
 class ConnectionFinder:
