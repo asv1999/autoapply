@@ -20,6 +20,7 @@ def init_db():
             linkedin_url TEXT, target_roles TEXT, salary_min INTEGER, salary_max INTEGER,
             resume_bullets TEXT, voice_rules TEXT, proof_points TEXT,
             education TEXT, skills TEXT, resume_template_path TEXT,
+            cover_letter_template_path TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -74,6 +75,9 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_apps_status ON applications(apply_status);
         CREATE INDEX IF NOT EXISTS idx_apps_outcome ON applications(outcome);
     """)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(profiles)").fetchall()}
+    if "cover_letter_template_path" not in cols:
+        conn.execute("ALTER TABLE profiles ADD COLUMN cover_letter_template_path TEXT")
     conn.commit(); conn.close()
 
 class ProfileDB:

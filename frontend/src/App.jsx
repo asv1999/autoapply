@@ -6,6 +6,14 @@ const api = async (path, opts = {}) => {
   if (!r.ok) { const e = await r.text(); throw new Error(e); }
   return r.json();
 };
+const uploadFile = async (path, file) => {
+  const body = new FormData();
+  body.append('file', file);
+  const r = await fetch(`${API}${path}`, { method: 'POST', body });
+  if (!r.ok) { const e = await r.text(); throw new Error(e); }
+  return r.json();
+};
+const fileName = (path) => path ? path.split('/').pop() : '';
 
 const s = {
   page: { fontFamily: "'Inter','DM Sans',system-ui,sans-serif", background: '#f8f9fa', color: '#1a1a2e', minHeight: '100vh' },
@@ -113,8 +121,57 @@ function Onboarding({ onComplete }) {
   );
 }
 
+function ProfileAssets({ profile, onRefresh }) {
+  const [uploading, setUploading] = useState('');
+
+  const handleUpload = async (kind, file) => {
+    if (!file) return;
+    setUploading(kind);
+    try {
+      await uploadFile(kind === 'resume' ? '/profile/upload-resume' : '/profile/upload-cover-letter', file);
+      await onRefresh();
+    } catch (e) {
+      alert(e.message);
+    }
+    setUploading('');
+  };
+
+  return <div style={s.card}>
+    <h3 style={s.h3}>Base documents</h3>
+    <p style={s.sub}>Upload the base resume and base cover letter you want AutoApply to keep on your profile.</p>
+    <div style={s.grid(280)}>
+      <div style={{background:'#f8f9fa',borderRadius:10,padding:16,border:'1px solid #e9ecef'}}>
+        <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Base resume</div>
+        <div style={{fontSize:12,color:'#6c757d',marginBottom:10}}>
+          {profile?.resume_template_path ? fileName(profile.resume_template_path) : 'No base resume uploaded yet'}
+        </div>
+        <input
+          type="file"
+          accept=".doc,.docx,.pdf,.txt"
+          onChange={e=>handleUpload('resume', e.target.files?.[0])}
+          disabled={uploading === 'resume'}
+          style={{fontSize:12}}
+        />
+      </div>
+      <div style={{background:'#f8f9fa',borderRadius:10,padding:16,border:'1px solid #e9ecef'}}>
+        <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Base cover letter</div>
+        <div style={{fontSize:12,color:'#6c757d',marginBottom:10}}>
+          {profile?.cover_letter_template_path ? fileName(profile.cover_letter_template_path) : 'No base cover letter uploaded yet'}
+        </div>
+        <input
+          type="file"
+          accept=".doc,.docx,.pdf,.txt"
+          onChange={e=>handleUpload('cover', e.target.files?.[0])}
+          disabled={uploading === 'cover'}
+          style={{fontSize:12}}
+        />
+      </div>
+    </div>
+  </div>;
+}
+
 // ═══ DASHBOARD ═══
-function Dashboard({ data, onAction, loading }) {
+function Dashboard({ data, profile, onAction, loading, onRefresh }) {
   const st = data?.applications || {};
   return <div>
     <div style={s.grid(140)}>
@@ -146,6 +203,7 @@ function Dashboard({ data, onAction, loading }) {
         <span style={{color:r.status==='completed'?'#28a745':r.status==='failed'?'#dc3545':'#fd7e14',fontWeight:600}}>{r.status}</span>
       </div>)}
     </div>}
+    <ProfileAssets profile={profile} onRefresh={onRefresh} />
   </div>;
 }
 
@@ -374,6 +432,7 @@ function Analytics({ data, applications, onRefresh }) {
 export default function App() {
   const [page, setPage] = useState('dashboard');
   const [data, setData] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [apps, setApps] = useState([]);
   const [analyticsData, setAnalytics] = useState(null);
@@ -383,8 +442,8 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [d,j,a,an] = await Promise.all([api('/dashboard'),api('/jobs?limit=200'),api('/applications?limit=200'),api('/analytics')]);
-      setData(d); setJobs(j); setApps(a); setAnalytics(an); setNeedsOnboarding(!d.profile_exists);
+      const [d,p,j,a,an] = await Promise.all([api('/dashboard'),api('/profile'),api('/jobs?limit=200'),api('/applications?limit=200'),api('/analytics')]);
+      setData(d); setProfile(p); setJobs(j); setApps(a); setAnalytics(an); setNeedsOnboarding(!d.profile_exists);
     } catch (e) { console.error(e); setNeedsOnboarding(true); }
   }, []);
 
@@ -415,7 +474,7 @@ export default function App() {
     </div>
     {status && <div style={{margin:'16px 24px 0',padding:'10px 16px',background:status.includes('Error')?'#f8d7da':'#d4edda',borderRadius:8,fontSize:13,color:status.includes('Error')?'#721c24':'#155724'}}>{status}</div>}
     <div style={{padding:'20px 24px',maxWidth:1000,margin:'0 auto'}}>
-      {page==='dashboard' && <Dashboard data={data} onAction={action} loading={loading} />}
+      {page==='dashboard' && <Dashboard data={data} profile={profile} onAction={action} loading={loading} onRefresh={refresh} />}
       {page==='jobs' && <Jobs jobs={jobs} onRefresh={refresh} />}
       {page==='resumes' && <ResumeStudio applications={apps} />}
       {page==='apply' && <AutoApply applications={apps} />}
