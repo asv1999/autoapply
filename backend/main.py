@@ -6,6 +6,7 @@ from typing import List, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -290,6 +291,24 @@ async def get_application(aid: int):
     a = ApplicationDB.get_by_id(aid)
     if not a: raise HTTPException(404)
     return a
+
+@app.get("/api/applications/{aid}/resume-file")
+async def get_application_resume_file(aid: int):
+    a = ApplicationDB.get_by_id(aid)
+    if not a or not a.get("resume_path"):
+        raise HTTPException(404, "Resume file not found")
+    if not os.path.exists(a["resume_path"]):
+        raise HTTPException(404, "Resume file missing on server")
+    return FileResponse(a["resume_path"], filename=os.path.basename(a["resume_path"]))
+
+@app.get("/api/applications/{aid}/cover-letter-file")
+async def get_application_cover_letter_file(aid: int):
+    a = ApplicationDB.get_by_id(aid)
+    if not a or not a.get("cover_letter_path"):
+        raise HTTPException(404, "Cover letter file not found")
+    if not os.path.exists(a["cover_letter_path"]):
+        raise HTTPException(404, "Cover letter file missing on server")
+    return FileResponse(a["cover_letter_path"], filename=os.path.basename(a["cover_letter_path"]))
 
 # ═══ 9. AUTO-APPLY (Page 5) ═══
 @app.post("/api/apply/{aid}")

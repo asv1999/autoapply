@@ -14,6 +14,7 @@ const uploadFile = async (path, file) => {
   return r.json();
 };
 const fileName = (path) => path ? path.split('/').pop() : '';
+const fileUrl = (path) => `${API}${path}`;
 const SECTION_NAMES = {digitech:'Digitech Services',asu:'Arizona State University',vaxom:'Vaxom Packaging',nccl:'National Commodities Clearing',vertiv:'Vertiv (Capstone)',km_capital:'KM Capital Partners',scdi:'Supply Chain DI Platform',gcn:'Global Careers Network'};
 const DEFAULT_RESUME_BULLETS = {
   digitech: [
@@ -417,6 +418,18 @@ function ResumeStudio({ applications, profile, onRefresh }) {
               </div>
             </div>
             {selected===a.id && detail && <div style={{marginTop:16}}>
+              <div style={{background:'#fff',borderRadius:12,padding:16,border:'1px solid #e9ecef',marginBottom:12,display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+                <div>
+                  <div style={{fontSize:13,fontWeight:700,color:'#1a1a2e',marginBottom:4}}>Generated files</div>
+                  <div style={{fontSize:12,color:'#6c757d'}}>
+                    {detail.resume_path ? fileName(detail.resume_path) : 'No tailored resume file generated yet'}
+                  </div>
+                </div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  {detail.resume_path && <a href={fileUrl(`/applications/${a.id}/resume-file`)} target="_blank" rel="noreferrer" style={s.btnO('#1a1a2e')}>Open resume</a>}
+                  {detail.cover_letter_path && <a href={fileUrl(`/applications/${a.id}/cover-letter-file`)} target="_blank" rel="noreferrer" style={s.btnO('#6f42c1')}>Open cover letter</a>}
+                </div>
+              </div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))',gap:12,marginBottom:12}}>
                 <div style={{background:'#f8f9fa',borderRadius:12,padding:20}}>
                   <h4 style={{fontSize:14,fontWeight:700,color:'#1a1a2e',margin:'0 0 16px',borderBottom:'2px solid #1a1a2e20',paddingBottom:8}}>Base resume template</h4>
