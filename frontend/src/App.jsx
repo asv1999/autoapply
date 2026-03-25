@@ -14,6 +14,45 @@ const uploadFile = async (path, file) => {
   return r.json();
 };
 const fileName = (path) => path ? path.split('/').pop() : '';
+const SECTION_NAMES = {digitech:'Digitech Services',asu:'Arizona State University',vaxom:'Vaxom Packaging',nccl:'National Commodities Clearing',vertiv:'Vertiv (Capstone)',km_capital:'KM Capital Partners',scdi:'Supply Chain DI Platform',gcn:'Global Careers Network'};
+const DEFAULT_RESUME_BULLETS = {
+  digitech: [
+    'Led a business turnaround from $4M to $8.6M revenue in 10 months using Six Sigma DMAIC, improving operating discipline and accelerating commercial performance.',
+    'Delivered 51% operational efficiency gains by designing AI transformation roadmaps for enterprise clients and aligning stakeholders around measurable adoption milestones.',
+  ],
+  asu: [
+    'Completed 15+ consulting engagements across 5 continents at Thunderbird, building recommendations for growth strategy, market entry, and operating model design.',
+    'Built a full-stack Supply Chain Decision Intelligence platform inspired by Microsoft OptiGuide to support scenario planning and data-backed decision making.',
+    'Scored in the top 1% globally on the Bain Associate Consultant assessment, demonstrating structured problem solving and hypothesis-driven analysis.',
+  ],
+  vaxom: [
+    'Built a commodity price forecasting model with 98% accuracy using 15 years of trade data to improve procurement and planning decisions.',
+    'Uncovered a $1B+ inventory imbalance in a Fortune 500 global supply chain and presented findings to senior leadership to support corrective action.',
+  ],
+  nccl: [
+    'Saved $100K annually and cut project intake time by 50% through workflow automation across 14 departments, improving delivery speed and operating consistency.',
+    'Designed CRM and process automation that reduced manual coordination and improved cross-functional visibility for complex business operations.',
+  ],
+  vertiv: [
+    'Presented high-stakes operational findings to C-suite stakeholders and translated analysis into practical recommendations for supply chain and inventory performance.',
+  ],
+  km_capital: [
+    'Reduced marketing spend by 40%, saving $60K, by deploying generative AI outreach automation that improved targeting efficiency and campaign productivity.',
+  ],
+  scdi: [
+    'Developed AI transformation and analytics solutions that connected operational data, forecasting, and scenario planning to executive decision making.',
+    'Combined Python, SQL, Tableau, and business analysis to turn ambiguous operational problems into structured, measurable improvement programs.',
+  ],
+  gcn: [
+    'Secured $24K in sponsorships and engaged 14,000+ students as President of the Global Careers Network, leading partnerships, events, and stakeholder outreach.',
+    'Led cross-functional teams across global settings, balancing strategy, execution, and communication to deliver complex initiatives on tight timelines.',
+  ],
+};
+
+const normalizeResumeBullets = (value) => {
+  if (!value || typeof value !== 'object' || !Object.values(value).some(v => Array.isArray(v) && v.length)) return DEFAULT_RESUME_BULLETS;
+  return { ...DEFAULT_RESUME_BULLETS, ...value };
+};
 
 const s = {
   page: { fontFamily: "'Inter','DM Sans',system-ui,sans-serif", background: '#f8f9fa', color: '#1a1a2e', minHeight: '100vh' },
@@ -170,6 +209,57 @@ function ProfileAssets({ profile, onRefresh }) {
   </div>;
 }
 
+function BaseResumeEditor({ profile, onRefresh }) {
+  const [sections, setSections] = useState(normalizeResumeBullets(profile?.resume_bullets));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setSections(normalizeResumeBullets(profile?.resume_bullets));
+  }, [profile]);
+
+  const updateSection = (key, raw) => {
+    setSections(prev => ({
+      ...prev,
+      [key]: raw.split('\n').map(line => line.trim()).filter(Boolean),
+    }));
+  };
+
+  const saveTemplate = async () => {
+    setSaving(true);
+    try {
+      await api('/profile/1', { method: 'PUT', body: JSON.stringify({ resume_bullets: sections }) });
+      await onRefresh();
+    } catch (e) {
+      alert(e.message);
+    }
+    setSaving(false);
+  };
+
+  return <div style={s.card}>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,gap:12,flexWrap:'wrap'}}>
+      <div>
+        <h3 style={{...s.h3,margin:0}}>Base resume template</h3>
+        <p style={{...s.sub,margin:'6px 0 0'}}>This is the base resume the AI rewrites for each role. You can edit any section before generating a tailored resume.</p>
+      </div>
+      <button style={s.btn('#1a1a2e', saving)} disabled={saving} onClick={saveTemplate}>{saving ? 'Saving...' : 'Save base template'}</button>
+    </div>
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+      <span style={s.badge('#e8eafc','#4361ee')}>Resume file: {profile?.resume_template_path ? fileName(profile.resume_template_path) : 'none uploaded'}</span>
+      <span style={s.badge('#f3e8ff','#6f42c1')}>Cover letter file: {profile?.cover_letter_template_path ? fileName(profile.cover_letter_template_path) : 'none uploaded'}</span>
+    </div>
+    <div style={s.grid(300)}>
+      {Object.entries(sections).map(([key, bullets]) => <div key={key} style={{background:'#f8f9fa',borderRadius:10,padding:14,border:'1px solid #e9ecef'}}>
+        <div style={{fontSize:12,fontWeight:700,color:'#1a1a2e',textTransform:'uppercase',letterSpacing:'0.4px',marginBottom:8}}>{SECTION_NAMES[key] || key}</div>
+        <textarea
+          style={{...s.input,minHeight:140,resize:'vertical',fontSize:12,lineHeight:1.6}}
+          value={(bullets || []).join('\n')}
+          onChange={e=>updateSection(key, e.target.value)}
+        />
+      </div>)}
+    </div>
+  </div>;
+}
+
 // ═══ DASHBOARD ═══
 function Dashboard({ data, profile, onAction, loading, onRefresh }) {
   const st = data?.applications || {};
@@ -270,7 +360,7 @@ function Jobs({ jobs, onRefresh }) {
 }
 
 // ═══ RESUME STUDIO ═══
-function ResumeStudio({ applications }) {
+function ResumeStudio({ applications, profile, onRefresh }) {
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
   const [generating, setGenerating] = useState(null);
@@ -289,14 +379,15 @@ function ResumeStudio({ applications }) {
     setGenerating(null);
   };
 
-  const sectionNames = {digitech:'Digitech Services',asu:'Arizona State University',vaxom:'Vaxom Packaging',nccl:'National Commodities Clearing',vertiv:'Vertiv (Capstone)',km_capital:'KM Capital Partners',scdi:'Supply Chain DI Platform',gcn:'Global Careers Network'};
-
   const hasBullets = (tb) => {
     if (!tb || typeof tb !== 'object') return false;
     return Object.values(tb).some(v => Array.isArray(v) && v.length > 0 && v.some(b => b && b.length > 10));
   };
 
+  const baseSections = normalizeResumeBullets(profile?.resume_bullets);
+
   return <div>
+    <BaseResumeEditor profile={profile} onRefresh={onRefresh} />
     <div style={s.card}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
         <h3 style={{...s.h3,margin:0}}>Tailored applications ({applications.length})</h3>
@@ -326,18 +417,28 @@ function ResumeStudio({ applications }) {
               </div>
             </div>
             {selected===a.id && detail && <div style={{marginTop:16}}>
-              {/* Tailored bullets */}
-              <div style={{background:'#f8f9fa',borderRadius:12,padding:20,marginBottom:12}}>
-                <h4 style={{fontSize:14,fontWeight:700,color:'#4361ee',margin:'0 0 16px',borderBottom:'2px solid #4361ee30',paddingBottom:8}}>Tailored resume bullets</h4>
-                {detail.tailored_bullets && typeof detail.tailored_bullets === 'object' ? (
-                  Object.entries(detail.tailored_bullets).filter(([,v])=>Array.isArray(v)&&v.length>0).length > 0 ? (
-                    Object.entries(detail.tailored_bullets).filter(([,v])=>Array.isArray(v)&&v.length>0).map(([sec,bullets]) =>
-                      <div key={sec} style={{marginBottom:16}}>
-                        <div style={{fontSize:12,fontWeight:700,color:'#1a1a2e',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:6,background:'#e8eafc',padding:'4px 10px',borderRadius:4,display:'inline-block'}}>{sectionNames[sec]||sec}</div>
-                        {bullets.map((b,i) => <p key={i} style={{fontSize:13,lineHeight:1.6,margin:'6px 0',paddingLeft:14,borderLeft:'3px solid #4361ee40',color:'#2c2c2c'}}>{b}</p>)}
-                      </div>)
-                  ) : <p style={{color:'#adb5bd',fontSize:13}}>Bullets not yet generated. Run the pipeline again.</p>
-                ) : <p style={{color:'#adb5bd',fontSize:13}}>No tailored content available.</p>}
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))',gap:12,marginBottom:12}}>
+                <div style={{background:'#f8f9fa',borderRadius:12,padding:20}}>
+                  <h4 style={{fontSize:14,fontWeight:700,color:'#1a1a2e',margin:'0 0 16px',borderBottom:'2px solid #1a1a2e20',paddingBottom:8}}>Base resume template</h4>
+                  {Object.entries(baseSections).map(([sec, bullets]) =>
+                    <div key={sec} style={{marginBottom:16}}>
+                      <div style={{fontSize:12,fontWeight:700,color:'#1a1a2e',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:6,background:'#edf2f7',padding:'4px 10px',borderRadius:4,display:'inline-block'}}>{SECTION_NAMES[sec]||sec}</div>
+                      {bullets.map((b,i) => <p key={i} style={{fontSize:13,lineHeight:1.6,margin:'6px 0',paddingLeft:14,borderLeft:'3px solid #adb5bd',color:'#495057'}}>{b}</p>)}
+                    </div>
+                  )}
+                </div>
+                <div style={{background:'#f8f9fa',borderRadius:12,padding:20}}>
+                  <h4 style={{fontSize:14,fontWeight:700,color:'#4361ee',margin:'0 0 16px',borderBottom:'2px solid #4361ee30',paddingBottom:8}}>Tailored resume output</h4>
+                  {detail.tailored_bullets && typeof detail.tailored_bullets === 'object' ? (
+                    Object.entries(detail.tailored_bullets).filter(([,v])=>Array.isArray(v)&&v.length>0).length > 0 ? (
+                      Object.entries(detail.tailored_bullets).filter(([,v])=>Array.isArray(v)&&v.length>0).map(([sec,bullets]) =>
+                        <div key={sec} style={{marginBottom:16}}>
+                          <div style={{fontSize:12,fontWeight:700,color:'#1a1a2e',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:6,background:'#e8eafc',padding:'4px 10px',borderRadius:4,display:'inline-block'}}>{SECTION_NAMES[sec]||sec}</div>
+                          {bullets.map((b,i) => <p key={i} style={{fontSize:13,lineHeight:1.6,margin:'6px 0',paddingLeft:14,borderLeft:'3px solid #4361ee40',color:'#2c2c2c'}}>{b}</p>)}
+                        </div>)
+                    ) : <p style={{color:'#adb5bd',fontSize:13}}>Bullets not yet generated. Run the pipeline again.</p>
+                  ) : <p style={{color:'#adb5bd',fontSize:13}}>No tailored content available.</p>}
+                </div>
               </div>
               {/* Cover letter */}
               <div style={{background:'#f8f9fa',borderRadius:12,padding:20}}>
@@ -476,7 +577,7 @@ export default function App() {
     <div style={{padding:'20px 24px',maxWidth:1000,margin:'0 auto'}}>
       {page==='dashboard' && <Dashboard data={data} profile={profile} onAction={action} loading={loading} onRefresh={refresh} />}
       {page==='jobs' && <Jobs jobs={jobs} onRefresh={refresh} />}
-      {page==='resumes' && <ResumeStudio applications={apps} />}
+      {page==='resumes' && <ResumeStudio applications={apps} profile={profile} onRefresh={refresh} />}
       {page==='apply' && <AutoApply applications={apps} />}
       {page==='analytics' && <Analytics data={analyticsData} applications={apps} onRefresh={refresh} />}
     </div>
