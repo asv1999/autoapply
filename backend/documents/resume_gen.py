@@ -1,154 +1,434 @@
-"""Document generator for tailored resumes and cover letters."""
+"""Generate tailored resume and cover letter DOCX files in Atharva's template style."""
 import json
 import logging
 import os
 import re
 
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls
+from docx.shared import Inches, Pt, RGBColor, Twips
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-TEMPLATE_DIR = os.path.join(BASE_DIR, "data", "profiles")
 OUTPUT_DIR = os.path.join(BASE_DIR, "data", "outputs", "resumes")
-TEMPLATE_NAME = "resume_template.docx"
 
-# These paragraph indices map to the user's existing resume template structure.
-BULLET_MAP = {
-    "digitech": [3, 4],
-    "asu": [7, 8, 9],
-    "vaxom": [12, 13],
-    "nccl": [16, 17],
-    "vertiv": [21],
-    "km_capital": [24],
-    "scdi": [27, 28],
-    "gcn": [32, 33],
+BLACK = RGBColor(0x00, 0x00, 0x00)
+NAVY = RGBColor(0x1B, 0x3A, 0x6B)
+GRAY = RGBColor(0x55, 0x55, 0x55)
+DARK = RGBColor(0x1A, 0x1A, 0x1A)
+
+SZ_NAME = Pt(14)
+SZ_CONTACT = Pt(8.5)
+SZ_SECTION = Pt(9)
+SZ_ROLE = Pt(9)
+SZ_BODY = Pt(8.5)
+
+WORK_SECTIONS = {
+    "digitech": {
+        "role": "Business Insights & Process Analytics Analyst",
+        "org": "Digitech Services Limited",
+        "location": "Phoenix, AZ",
+        "dates": "Aug 2025 – Dec 2025",
+    },
+    "asu": {
+        "role": "Analytics & Reporting Intern, Strategic Projects",
+        "org": "Arizona State University",
+        "location": "Tempe, AZ",
+        "dates": "Aug 2024 – May 2025",
+    },
+    "vaxom": {
+        "role": "Data Insights & Commercial Analytics Analyst",
+        "org": "Vaxom Packaging",
+        "location": "Mumbai, India",
+        "dates": "Aug 2022 – Aug 2023",
+    },
+    "nccl": {
+        "role": "Data Analytics & Reporting Analyst",
+        "org": "National Commodities Clearing Limited",
+        "location": "Mumbai, India",
+        "dates": "Feb 2021 – Aug 2022",
+    },
+}
+
+CONSULTING_SECTIONS = {
+    "vertiv": {
+        "role": "Performance Analytics & Benchmarking",
+        "org": "Vertiv, Global Data Center Infrastructure",
+        "location": "Thunderbird Capstone",
+        "dates": "Sep 2024 – Dec 2024",
+    },
+    "km_capital": {
+        "role": "Market Sizing & Data Analysis",
+        "org": "KM Capital Partners, Healthcare Strategy",
+        "location": "Thunderbird Corporate Partners",
+        "dates": "Jan 2025 – May 2025",
+    },
+    "scdi": {
+        "role": "Founder",
+        "org": "Supply Chain Decision Intelligence Platform",
+        "location": "Independent Project",
+        "dates": "Jan 2026 – Present",
+    },
 }
 
 
-def _get_template_path():
-    path = os.path.join(TEMPLATE_DIR, TEMPLATE_NAME)
-    if os.path.exists(path):
-        return path
-    for alt in (
-        os.path.join(BASE_DIR, "resume_template.docx"),
-        os.path.join(TEMPLATE_DIR, "Atharva_Vaidya_Resume.docx"),
-    ):
-        if os.path.exists(alt):
-            return alt
-    return None
+def _slug(value, fallback):
+    clean = re.sub(r"[^a-zA-Z0-9]+", "_", str(value or "")).strip("_")
+    return clean or fallback
 
 
-def _replace_bullet_text(paragraph, new_text):
-    if not paragraph.runs:
-        paragraph.add_run(new_text)
-        return
-    first_run = paragraph.runs[0]
-    for run in paragraph.runs[1:]:
-        run.text = ""
-    first_run.text = new_text
+def _profile_name(profile):
+    return profile.get("name") or "Atharva Vaidya"
+
+
+def _name_slug(profile):
+    return _slug(_profile_name(profile), "Candidate")
+
+
+def _company_slug(job):
+    return _slug(job.get("company"), "Unknown")
+
+
+def _parse_jsonish(value, default):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+    return value
 
 
 def _normalize_bullets(application):
-    bullets = application.get("tailored_bullets", {})
-    if isinstance(bullets, str):
-        try:
-            bullets = json.loads(bullets)
-        except Exception:
-            bullets = {}
-    return bullets
+    bullets = _parse_jsonish(application.get("tailored_bullets"), {})
+    return bullets if isinstance(bullets, dict) else {}
 
 
-def _has_content(bullets):
+def _normalize_profile_bullets(profile):
+    bullets = _parse_jsonish(profile.get("resume_bullets"), {})
+    return bullets if isinstance(bullets, dict) else {}
+
+
+def _has_resume_content(bullets):
     return any(
-        isinstance(values, list) and values and any(len(str(item)) > 20 for item in values)
+        isinstance(values, list) and any(len(str(item).strip()) > 20 for item in values)
         for values in bullets.values()
     )
 
 
-def _company_slug(job):
-    return re.sub(r"[^a-zA-Z0-9]", "_", job.get("company", "Unknown"))
+def _set_run_style(run, *, size, color, bold=False, italic=False):
+    run.font.name = "Calibri"
+    run.font.size = size
+    run.font.bold = bold
+    run.font.italic = italic
+    run.font.color.rgb = color
 
 
-def _name_slug(profile):
-    return profile.get("name", "").replace(" ", "_") or "Candidate"
+def _configure_resume_page(doc):
+    for section in doc.sections:
+        section.page_width = Twips(12240)
+        section.page_height = Twips(15840)
+        section.top_margin = Twips(720)
+        section.bottom_margin = Twips(720)
+        section.left_margin = Twips(900)
+        section.right_margin = Twips(900)
+
+
+def _configure_cover_letter_page(doc):
+    for section in doc.sections:
+        section.page_width = Twips(12240)
+        section.page_height = Twips(15840)
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin = Inches(1)
+        section.right_margin = Inches(1)
+
+
+def _add_name(doc, text):
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(1.5)
+    run = p.add_run((text or "").upper())
+    _set_run_style(run, size=SZ_NAME, color=BLACK, bold=True)
+
+
+def _add_contact(doc, values):
+    parts = [str(value).strip() for value in values if str(value or "").strip()]
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(4)
+    run = p.add_run("  |  ".join(parts))
+    _set_run_style(run, size=SZ_CONTACT, color=GRAY)
+
+
+def _add_divider(doc):
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(3)
+    p.paragraph_format.space_after = Pt(3)
+    p_pr = p._element.get_or_add_pPr()
+    p_bdr = parse_xml(
+        f'<w:pBdr {nsdecls("w")}>'
+        '<w:bottom w:val="single" w:sz="6" w:space="1" w:color="1B3A6B"/>'
+        "</w:pBdr>"
+    )
+    p_pr.append(p_bdr)
+
+
+def _add_section_header(doc, text):
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(5)
+    p.paragraph_format.space_after = Pt(2)
+    run = p.add_run(text.upper())
+    _set_run_style(run, size=SZ_SECTION, color=NAVY, bold=True)
+
+
+def _add_role_row(doc, role_text, org_text, location, dates):
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(5)
+    p.paragraph_format.space_after = Pt(1)
+    p_pr = p._element.get_or_add_pPr()
+    tabs = parse_xml(
+        f'<w:tabs {nsdecls("w")}><w:tab w:val="right" w:pos="9300"/></w:tabs>'
+    )
+    p_pr.append(tabs)
+
+    run = p.add_run(role_text)
+    _set_run_style(run, size=SZ_ROLE, color=DARK, bold=True)
+
+    location_part = f"  ·  {location}" if location else ""
+    run = p.add_run(f"  ·  {org_text}{location_part}")
+    _set_run_style(run, size=SZ_ROLE, color=DARK)
+
+    run = p.add_run(f"\t{dates}")
+    _set_run_style(run, size=SZ_CONTACT, color=GRAY, italic=True)
+
+
+def _add_indented_paragraph(doc):
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(1.5)
+    p.paragraph_format.space_after = Pt(1.5)
+    p_pr = p._element.get_or_add_pPr()
+    p_pr.append(parse_xml(f'<w:ind {nsdecls("w")} w:left="300" w:hanging="180"/>'))
+    return p
+
+
+def _add_bullet(doc, text):
+    p = _add_indented_paragraph(doc)
+    run = p.add_run(f"•  {text}")
+    _set_run_style(run, size=SZ_BODY, color=BLACK)
+
+
+def _add_bold_bullet(doc, bold_part, rest):
+    p = _add_indented_paragraph(doc)
+    run = p.add_run("•  ")
+    _set_run_style(run, size=SZ_BODY, color=BLACK)
+    run = p.add_run(bold_part)
+    _set_run_style(run, size=SZ_BODY, color=BLACK, bold=True)
+    run = p.add_run(rest)
+    _set_run_style(run, size=SZ_BODY, color=BLACK)
+
+
+def _add_skill_line(doc, label, value):
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(1.5)
+    p.paragraph_format.space_after = Pt(1.5)
+    run = p.add_run(f"{label}: ")
+    _set_run_style(run, size=SZ_BODY, color=DARK, bold=True)
+    run = p.add_run(value)
+    _set_run_style(run, size=SZ_BODY, color=BLACK)
+
+
+def _first_nonempty(*values):
+    for value in values:
+        if str(value or "").strip():
+            return str(value).strip()
+    return ""
+
+
+def _linkedin(profile):
+    raw = _first_nonempty(profile.get("linkedin_url"), profile.get("linkedin"))
+    if not raw:
+        return ""
+    return raw.replace("https://", "").replace("http://", "").rstrip("/")
+
+
+def _summary_bullets(profile, job):
+    target_title = job.get("title") or "strategy and operations role"
+    target_company = job.get("company") or "the team"
+    sectors = "consulting, manufacturing, and technology"
+    bullet_1 = (
+        "4+ years",
+        f" driving strategy, analytics, and process improvement across {sectors}"
+        f" — aligning data, stakeholders, and execution for {target_title.lower()} work.",
+    )
+    bullet_2 = (
+        "Track record:",
+        " 115% revenue turnaround ($4M to $8.6M), 51% operational efficiency gains "
+        "through AI transformation, and $100K+ in annual savings from workflow redesign.",
+    )
+    bullet_3 = (
+        "Multi-market lens across 5 continents",
+        f" — bringing structured problem-solving and cross-cultural execution to {target_company}.",
+    )
+    bullet_4 = (
+        "Tools:",
+        " SQL, Python, Excel, Tableau, Alteryx, Power BI, Salesforce, SAP EWM, Oracle ERP.",
+    )
+    return [bullet_1, bullet_2, bullet_3, bullet_4]
+
+
+def _categorize_skills(skills):
+    skills = _parse_jsonish(skills, skills)
+    if isinstance(skills, str):
+        skills = [part.strip() for part in skills.split(",") if part.strip()]
+    if not isinstance(skills, list):
+        skills = []
+
+    analytics = []
+    strategy = []
+    tech = []
+
+    analytics_kw = [
+        "sql", "python", "tableau", "excel", "power bi", "looker", "alteryx",
+        "data", "analytics", "bigquery", "google analytics",
+    ]
+    strategy_kw = [
+        "strategy", "six sigma", "process", "transformation", "change management",
+        "stakeholder", "business case", "financial", "market analysis", "gtm",
+        "cross-functional", "leadership", "consulting", "client",
+    ]
+    tech_kw = [
+        "salesforce", "sap", "crm", "automation", "ai", "digital twin",
+        "scenario", "vba", "generative", "workflow", "oracle",
+    ]
+
+    for skill in skills:
+        text = str(skill).strip()
+        lower = text.lower()
+        if any(token in lower for token in analytics_kw):
+            analytics.append(text)
+        elif any(token in lower for token in strategy_kw):
+            strategy.append(text)
+        elif any(token in lower for token in tech_kw):
+            tech.append(text)
+        elif text:
+            analytics.append(text)
+
+    return {
+        "Analytics & Reporting": ", ".join(analytics) if analytics else "SQL, Python, Tableau, Excel, Power BI",
+        "Strategy & Operations": ", ".join(strategy) if strategy else "Six Sigma DMAIC, Strategic Planning, Process Improvement",
+        "Technology & Platforms": ", ".join(tech) if tech else "Salesforce CRM, SAP EWM, Oracle ERP",
+    }
+
+
+def _iter_section_bullets(section_name, tailored, base):
+    for source in (tailored, base):
+        values = source.get(section_name, [])
+        if isinstance(values, list):
+            cleaned = [str(item).strip() for item in values if len(str(item).strip()) > 20]
+            if cleaned:
+                return cleaned
+    return []
 
 
 def generate_resume(profile, application, job, output_dir=None):
     output_dir = output_dir or OUTPUT_DIR
     os.makedirs(output_dir, exist_ok=True)
 
-    bullets = _normalize_bullets(application)
-    template_path = _get_template_path()
-    if template_path and _has_content(bullets):
-        doc = Document(template_path)
-        paragraphs = doc.paragraphs
-        for section_name, paragraph_indexes in BULLET_MAP.items():
-            section_bullets = bullets.get(section_name, [])
-            if not isinstance(section_bullets, list):
-                continue
-            for bullet_idx, paragraph_idx in enumerate(paragraph_indexes):
-                if paragraph_idx >= len(paragraphs) or bullet_idx >= len(section_bullets):
-                    continue
-                bullet = section_bullets[bullet_idx]
-                if bullet and len(str(bullet)) > 20:
-                    _replace_bullet_text(paragraphs[paragraph_idx], str(bullet))
-        filename = f"Resume_{_name_slug(profile)}_{_company_slug(job)}.docx"
-        filepath = os.path.join(output_dir, filename)
-        doc.save(filepath)
-        return filepath, filename
+    tailored_bullets = _normalize_bullets(application)
+    base_bullets = _normalize_profile_bullets(profile)
 
-    logger.warning("Using fallback resume generation for application %s", application.get("id"))
-    return _generate_fallback(profile, application, job, output_dir)
+    if not _has_resume_content(tailored_bullets) and not _has_resume_content(base_bullets):
+        logger.warning("Resume generation skipped due to missing bullet content for application %s", application.get("id"))
+        return None, None
 
-
-def _generate_fallback(profile, application, job, output_dir):
     doc = Document()
-    for section in doc.sections:
-        section.top_margin = Inches(0.6)
-        section.bottom_margin = Inches(0.6)
-        section.left_margin = Inches(0.6)
-        section.right_margin = Inches(0.6)
+    _configure_resume_page(doc)
 
-    header = doc.add_paragraph()
-    header.alignment = 1
-    run = header.add_run(profile.get("name", ""))
-    run.font.size = Pt(14)
-    run.font.bold = True
-    run.font.name = "Garamond"
-    run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
+    _add_name(doc, _profile_name(profile))
+    _add_contact(
+        doc,
+        [
+            _first_nonempty(profile.get("location"), "Phoenix, AZ"),
+            profile.get("email"),
+            profile.get("phone"),
+            _linkedin(profile),
+        ],
+    )
 
-    parts = [value for value in (profile.get("location"), profile.get("email"), profile.get("phone")) if value]
-    contact = doc.add_paragraph()
-    contact.alignment = 1
-    run = contact.add_run(" | ".join(parts))
-    run.font.size = Pt(8)
-    run.font.name = "Garamond"
-    run.font.color.rgb = RGBColor(0x49, 0x50, 0x57)
+    _add_divider(doc)
+    _add_section_header(doc, "Summary")
+    for bold_part, rest in _summary_bullets(profile, job):
+        _add_bold_bullet(doc, bold_part, rest)
 
-    doc.add_paragraph()
-    note = doc.add_paragraph()
-    run = note.add_run(f"Tailored for: {job.get('title', '')} at {job.get('company', '')}")
-    run.font.size = Pt(10)
-    run.font.italic = True
-    run.font.name = "Garamond"
+    _add_divider(doc)
+    _add_section_header(doc, "Core Skills")
+    for label, value in _categorize_skills(profile.get("skills", [])).items():
+        _add_skill_line(doc, label, value)
 
-    bullets = _normalize_bullets(application)
-    for section_name, values in bullets.items():
-        if not isinstance(values, list) or not values:
-            continue
-        title = doc.add_paragraph()
-        run = title.add_run(section_name.replace("_", " ").title())
-        run.font.bold = True
-        run.font.size = Pt(11)
-        run.font.name = "Garamond"
-        for value in values:
-            doc.add_paragraph(str(value), style="List Bullet")
+    _add_divider(doc)
+    _add_section_header(doc, "Professional Experience")
+    for section_name in ("digitech", "asu", "vaxom", "nccl"):
+        info = WORK_SECTIONS[section_name]
+        _add_role_row(doc, info["role"], info["org"], info["location"], info["dates"])
+        for bullet in _iter_section_bullets(section_name, tailored_bullets, base_bullets):
+            _add_bullet(doc, bullet)
+
+    _add_divider(doc)
+    _add_section_header(doc, "Consulting Projects")
+    for section_name in ("vertiv", "km_capital", "scdi"):
+        info = CONSULTING_SECTIONS[section_name]
+        _add_role_row(doc, info["role"], info["org"], info["location"], info["dates"])
+        for bullet in _iter_section_bullets(section_name, tailored_bullets, base_bullets):
+            _add_bullet(doc, bullet)
+
+    _add_divider(doc)
+    _add_section_header(doc, "Education")
+    _add_role_row(
+        doc,
+        "Master of Global Management",
+        "Thunderbird School of Global Management, ASU",
+        "Phoenix, AZ",
+        "May 2025",
+    )
+    _add_bullet(doc, "Thunderbird Alumni Scholarship (60% tuition)  |  GPA: 3.49/4.0")
+    _add_role_row(
+        doc,
+        "B.Tech, Electronics & Telecommunications",
+        "Vishwakarma Institute of Technology  ·  Research Scholar, KIST Seoul",
+        "India",
+        "Jun 2021",
+    )
+
+    _add_divider(doc)
+    _add_section_header(doc, "Leadership & Interests")
+    leadership_bullets = _iter_section_bullets("gcn", tailored_bullets, base_bullets)
+    if leadership_bullets:
+        for bullet in leadership_bullets:
+            _add_bullet(doc, bullet)
+    else:
+        _add_bullet(
+            doc,
+            "President, Global Careers Network ASU (2024-25): Drove 12% YoY internship growth across "
+            "14,000+ students by connecting them with Fortune 500 partners including JP Morgan Chase, "
+            "Bain & Company, and McKinsey.",
+        )
+    _add_bullet(
+        doc,
+        'Cricket (AZ Premier League top run-scorer, 2 seasons)  |  Cooking (voted best vegetarian chef, '
+        'Thunderbird 2025)  |  Newsletter: "Simplified by Atharva" — AI transformation in global operations',
+    )
 
     filename = f"Resume_{_name_slug(profile)}_{_company_slug(job)}.docx"
     filepath = os.path.join(output_dir, filename)
     doc.save(filepath)
+    logger.info("Generated resume: %s", filepath)
     return filepath, filename
 
 
@@ -156,43 +436,37 @@ def generate_cover_letter(profile, application, job, output_dir=None):
     output_dir = output_dir or OUTPUT_DIR
     os.makedirs(output_dir, exist_ok=True)
 
-    cover_letter = application.get("cover_letter", "")
-    if not cover_letter or len(cover_letter.strip()) < 50:
+    cover_letter = str(application.get("cover_letter") or "").strip()
+    if len(cover_letter) < 50:
         return None, None
 
     doc = Document()
-    for section in doc.sections:
-        section.top_margin = Inches(1)
-        section.bottom_margin = Inches(1)
-        section.left_margin = Inches(1)
-        section.right_margin = Inches(1)
+    _configure_cover_letter_page(doc)
 
-    name = doc.add_paragraph()
-    run = name.add_run(profile.get("name", ""))
-    run.font.size = Pt(14)
-    run.font.bold = True
-    run.font.name = "Garamond"
-    run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
-
-    parts = [value for value in (profile.get("location"), profile.get("email"), profile.get("phone")) if value]
-    contact = doc.add_paragraph()
-    run = contact.add_run(" | ".join(parts))
-    run.font.size = Pt(9)
-    run.font.name = "Garamond"
-    run.font.color.rgb = RGBColor(0x49, 0x50, 0x57)
-
+    _add_name(doc, _profile_name(profile))
+    _add_contact(
+        doc,
+        [
+            profile.get("location"),
+            profile.get("email"),
+            profile.get("phone"),
+            _linkedin(profile),
+        ],
+    )
+    _add_divider(doc)
     doc.add_paragraph()
-    for paragraph in re.split(r"\n\n+", cover_letter):
+
+    for paragraph in re.split(r"\n\s*\n+", cover_letter):
         paragraph = paragraph.strip()
-        if not paragraph:
+        if len(paragraph) < 20:
             continue
-        body = doc.add_paragraph()
-        body.paragraph_format.space_after = Pt(8)
-        run = body.add_run(paragraph)
-        run.font.size = Pt(11)
-        run.font.name = "Garamond"
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(6)
+        run = p.add_run(paragraph)
+        _set_run_style(run, size=Pt(10.5), color=BLACK)
 
     filename = f"CoverLetter_{_name_slug(profile)}_{_company_slug(job)}.docx"
     filepath = os.path.join(output_dir, filename)
     doc.save(filepath)
+    logger.info("Generated cover letter: %s", filepath)
     return filepath, filename
