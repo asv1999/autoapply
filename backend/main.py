@@ -293,7 +293,7 @@ async def get_application(aid: int):
     if not a: raise HTTPException(404)
     return a
 
-@app.get("/api/applications/{aid}/resume-file")
+@app.api_route("/api/applications/{aid}/resume-file", methods=["GET", "HEAD"])
 async def get_application_resume_file(aid: int):
     a = ApplicationDB.get_by_id(aid)
     if not a or not a.get("resume_path"):
@@ -302,7 +302,7 @@ async def get_application_resume_file(aid: int):
         raise HTTPException(404, "Resume file missing on server")
     return FileResponse(a["resume_path"], filename=os.path.basename(a["resume_path"]))
 
-@app.get("/api/applications/{aid}/cover-letter-file")
+@app.api_route("/api/applications/{aid}/cover-letter-file", methods=["GET", "HEAD"])
 async def get_application_cover_letter_file(aid: int):
     a = ApplicationDB.get_by_id(aid)
     if not a or not a.get("cover_letter_path"):
@@ -448,7 +448,7 @@ async def get_evaluation_report(jid: int):
     from intelligence.reporting import ensure_report
     return ensure_report(job, e)
 
-@app.get("/api/evaluations/{jid}/report-file")
+@app.api_route("/api/evaluations/{jid}/report-file", methods=["GET", "HEAD"])
 async def get_evaluation_report_file(jid: int):
     e = EvaluationDB.get_by_job(jid)
     if not e:
