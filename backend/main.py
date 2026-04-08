@@ -25,6 +25,7 @@ def _output_dirs():
     return [
         os.path.join(DATA_ROOT, "outputs", "resumes"),
         os.path.join(DATA_ROOT, "outputs", "screenshots"),
+        os.path.join(DATA_ROOT, "reports"),
         _profile_dir(),
     ]
 
@@ -436,10 +437,40 @@ async def get_evaluation(jid: int):
     if not e: raise HTTPException(404, "No evaluation found for this job")
     return e
 
+@app.get("/api/evaluations/{jid}/report")
+async def get_evaluation_report(jid: int):
+    e = EvaluationDB.get_by_job(jid)
+    if not e:
+        raise HTTPException(404, "No evaluation found for this job")
+    job = JobDB.get_by_id(jid)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    from intelligence.reporting import ensure_report
+    return ensure_report(job, e)
+
+@app.get("/api/evaluations/{jid}/report-file")
+async def get_evaluation_report_file(jid: int):
+    e = EvaluationDB.get_by_job(jid)
+    if not e:
+        raise HTTPException(404, "No evaluation found for this job")
+    job = JobDB.get_by_id(jid)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    from intelligence.reporting import ensure_report
+    report = ensure_report(job, e)
+    if not os.path.exists(report["path"]):
+        raise HTTPException(404, "Report file missing on server")
+    return FileResponse(report["path"], filename=report["filename"], media_type="text/markdown")
+
 @app.get("/api/evaluations/stats")
 async def evaluation_stats():
     """Get evaluation statistics."""
     return EvaluationDB.get_stats()
+
+@app.get("/api/pipeline/health")
+async def pipeline_health():
+    from intelligence.pipeline_health import verify_pipeline
+    return verify_pipeline()
 
 # ═══ ATS PDF GENERATION ═══
 @app.post("/api/generate-pdf/{aid}")
@@ -510,14 +541,21 @@ async def dashboard():
     if not recent_runs:
         recent_runs = _derive_recent_runs(5)
     eval_stats = {}
+    pipeline = {}
     try:
         eval_stats = EvaluationDB.get_stats()
+    except:
+        pass
+    try:
+        from intelligence.pipeline_health import verify_pipeline
+        pipeline = verify_pipeline().get("summary", {})
     except:
         pass
     return {
         "total_jobs": JobDB.count(),
         "applications": ApplicationDB.get_stats(),
         "evaluations": eval_stats,
+        "pipeline_health": pipeline,
         "recent_runs": recent_runs,
         "profile_exists": ProfileDB.exists(),
     }

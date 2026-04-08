@@ -265,6 +265,7 @@ function BaseResumeEditor({ profile, onRefresh }) {
 function Dashboard({ data, profile, onAction, loading, onRefresh }) {
   const st = data?.applications || {};
   const ev = data?.evaluations || {};
+  const pipeline = data?.pipeline_health || {};
   return <div>
     <div style={s.grid(140)}>
       {[
@@ -306,6 +307,19 @@ function Dashboard({ data, profile, onAction, loading, onRefresh }) {
         <button style={s.btn('#e83e8c', loading.pdf)} disabled={loading.pdf} onClick={()=>onAction('pdf')}>{loading.pdf ? 'Generating...' : '5. Gen ATS PDF'}</button>
       </div>
     </div>
+    {(pipeline.errors > 0 || pipeline.warnings > 0 || pipeline.applications_total > 0) && <div style={s.card}>
+      <h3 style={s.h3}>Pipeline integrity</h3>
+      <div style={s.grid(150)}>
+        <div style={s.stat}><div style={{...s.statN,color:'#1a1a2e',fontSize:22}}>{pipeline.applications_total||0}</div><div style={s.statL}>Applications</div></div>
+        <div style={s.stat}><div style={{...s.statN,color:'#20c997',fontSize:22}}>{pipeline.applications_with_generated_files||0}</div><div style={s.statL}>Files ready</div></div>
+        <div style={s.stat}><div style={{...s.statN,color:'#6f42c1',fontSize:22}}>{pipeline.evaluations_total||0}</div><div style={s.statL}>Saved reports</div></div>
+        <div style={s.stat}><div style={{...s.statN,color:(pipeline.warnings||0)>0?'#fd7e14':'#28a745',fontSize:22}}>{pipeline.warnings||0}</div><div style={s.statL}>Warnings</div></div>
+        <div style={s.stat}><div style={{...s.statN,color:(pipeline.errors||0)>0?'#dc3545':'#28a745',fontSize:22}}>{pipeline.errors||0}</div><div style={s.statL}>Errors</div></div>
+      </div>
+      <div style={{marginTop:10,fontSize:13,color:'#6c757d'}}>
+        {pipeline.errors > 0 ? 'The pipeline needs attention before you trust it fully.' : pipeline.warnings > 0 ? 'The pipeline is running, with a few issues worth cleaning up.' : 'The pipeline health check looks clean.'}
+      </div>
+    </div>}
     {data?.recent_runs?.length > 0 && <div style={s.card}>
       <h3 style={s.h3}>Recent runs</h3>
       {data.recent_runs.map((r,i) => <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid #f1f3f5',fontSize:13}}>
@@ -630,9 +644,13 @@ function Evaluate({ jobs, onRefresh }) {
   const [evaluating, setEvaluating] = useState(false);
   const [batchEval, setBatchEval] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [reportCache, setReportCache] = useState({});
+  const [reportLoading, setReportLoading] = useState(null);
+  const [pipelineHealth, setPipelineHealth] = useState(null);
 
   useEffect(() => {
     api('/evaluations?limit=200').then(setEvaluations).catch(() => {});
+    api('/pipeline/health').then(setPipelineHealth).catch(() => {});
   }, []);
 
   const evalOne = async (jid) => {
@@ -661,6 +679,18 @@ function Evaluate({ jobs, onRefresh }) {
     catch (e) { alert(e.message); }
   };
 
+  const loadReport = async (jid) => {
+    if (reportCache[jid] || reportLoading === jid) return;
+    setReportLoading(jid);
+    try {
+      const report = await api(`/evaluations/${jid}/report`);
+      setReportCache(prev => ({ ...prev, [jid]: report }));
+    } catch (e) {
+      alert(e.message);
+    }
+    setReportLoading(null);
+  };
+
   const getEval = (jid) => evaluations.find(e => e.job_id === jid);
 
   return <div>
@@ -673,6 +703,23 @@ function Evaluate({ jobs, onRefresh }) {
         <button style={s.btnO('#20c997')} onClick={() => { api('/evaluate/batch?limit=10', {method:'POST'}).then(() => api('/batch/evaluate-and-tailor?limit=10', {method:'POST'})).then(r => alert(`Full batch started: ${r.run_id}`)).catch(e => alert(e.message)); }}>Full batch: Evaluate + Tailor</button>
       </div>
     </div>
+
+    {pipelineHealth?.summary && <div style={s.card}>
+      <h3 style={s.h3}>Career-Ops Integrity Check</h3>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+        <span style={s.badge('#e8eafc','#4361ee')}>{pipelineHealth.summary.jobs_total||0} jobs</span>
+        <span style={s.badge('#f3e8ff','#6f42c1')}>{pipelineHealth.summary.evaluations_total||0} evaluations</span>
+        <span style={s.badge('#d4edda','#155724')}>{pipelineHealth.summary.applications_with_generated_files||0} files ready</span>
+        <span style={s.badge((pipelineHealth.summary.warnings||0)>0?'#fff3cd':'#d4edda',(pipelineHealth.summary.warnings||0)>0?'#856404':'#155724')}>{pipelineHealth.summary.warnings||0} warnings</span>
+        <span style={s.badge((pipelineHealth.summary.errors||0)>0?'#f8d7da':'#d4edda',(pipelineHealth.summary.errors||0)>0?'#721c24':'#155724')}>{pipelineHealth.summary.errors||0} errors</span>
+      </div>
+      {pipelineHealth.issues?.length > 0 ? (
+        pipelineHealth.issues.slice(0, 6).map((issue, i) =>
+          <div key={i} style={{padding:'8px 0',borderBottom:'1px solid #f1f3f5',fontSize:13,color:issue.level==='error'?'#721c24':'#856404'}}>
+            <strong style={{textTransform:'uppercase',fontSize:11}}>{issue.level}</strong> · {issue.message}
+          </div>)
+      ) : <p style={{color:'#6c757d',fontSize:13,margin:0}}>No integrity issues found in the latest pipeline check.</p>}
+    </div>}
 
     {evaluations.length > 0 && <div style={s.card}>
       <h3 style={s.h3}>Evaluation summary</h3>
@@ -693,8 +740,13 @@ function Evaluate({ jobs, onRefresh }) {
       <div style={{maxHeight:600,overflowY:'auto'}}>
         {jobs.map(j => {
           const ev = getEval(j.id);
+          const report = reportCache[j.id];
           return <div key={j.id} style={{padding:'12px 0',borderBottom:'1px solid #f1f3f5'}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSelected(selected===j.id?null:j.id)}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>{
+              const next = selected===j.id ? null : j.id;
+              setSelected(next);
+              if (next && ev) loadReport(j.id);
+            }}>
               <div>
                 <div style={{fontSize:14,fontWeight:600}}>{j.title} <span style={{fontWeight:400,color:'#6c757d'}}>at {j.company}</span></div>
                 <div style={{display:'flex',gap:6,marginTop:4}}>
@@ -702,6 +754,7 @@ function Evaluate({ jobs, onRefresh }) {
                   {ev && <EvalScoreBadge score={ev.global_score} />}
                   {ev?.archetype && <span style={s.badge('#e8eafc','#4361ee')}>{ev.archetype}</span>}
                   {ev?.keywords?.length > 0 && <span style={s.badge('#f3e8ff','#6f42c1')}>{ev.keywords.length} keywords</span>}
+                  {report && <span style={s.badge('#d4edda','#155724')}>report saved</span>}
                 </div>
               </div>
               <div style={{display:'flex',gap:6}}>
@@ -729,6 +782,22 @@ function Evaluate({ jobs, onRefresh }) {
                   {ev.keywords.map((kw,i) => <span key={i} style={s.badge('#e8eafc','#4361ee')}>{kw}</span>)}
                 </div>
               </div>}
+              <div style={{background:'#fff',borderRadius:12,padding:16,border:'1px solid #e9ecef',marginBottom:16}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:700,color:'#1a1a2e',marginBottom:4}}>Saved evaluation report</div>
+                    <div style={{fontSize:12,color:'#6c757d'}}>
+                      {report ? report.filename : reportLoading===j.id ? 'Generating report preview...' : 'Generate a markdown report for this A-F evaluation.'}
+                    </div>
+                  </div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    {!report && <button style={s.btnO('#1a1a2e')} onClick={()=>loadReport(j.id)}>{reportLoading===j.id?'Generating...':'Generate report'}</button>}
+                    {report && <a href={fileUrl(`/evaluations/${j.id}/report-file`)} target="_blank" rel="noreferrer" style={s.btnO('#1a1a2e')}>Open report</a>}
+                    {report && <a href={fileUrl(`/evaluations/${j.id}/report-file`)} download style={s.btnO('#0f766e')}>Download .md</a>}
+                  </div>
+                </div>
+                {report?.content && <pre style={{margin:'14px 0 0',padding:12,background:'#f8f9fa',borderRadius:8,fontSize:12,lineHeight:1.6,whiteSpace:'pre-wrap',maxHeight:260,overflowY:'auto'}}>{report.content}</pre>}
+              </div>
               {/* A-F Blocks */}
               {ev.blocks && Object.entries(ev.blocks).filter(([,v]) => v).map(([block, content]) =>
                 <div key={block} style={{marginBottom:16,background:'#f8f9fa',borderRadius:12,padding:16,borderLeft:`4px solid ${BLOCK_COLORS[block]||'#6c757d'}`}}>
