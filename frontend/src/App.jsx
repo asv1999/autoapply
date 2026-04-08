@@ -264,14 +264,32 @@ function BaseResumeEditor({ profile, onRefresh }) {
 // ═══ DASHBOARD ═══
 function Dashboard({ data, profile, onAction, loading, onRefresh }) {
   const st = data?.applications || {};
+  const ev = data?.evaluations || {};
   return <div>
     <div style={s.grid(140)}>
-      {[{n:data?.total_jobs||0,l:'Jobs found',c:'#4361ee'},{n:st.total||0,l:'Tailored',c:'#6f42c1'},{n:st.submitted||0,l:'Applied',c:'#20c997'},{n:st.callbacks||0,l:'Callbacks',c:'#fd7e14'},{n:st.interviews||0,l:'Interviews',c:'#28a745'},{n:`${st.callback_rate||0}%`,l:'Callback rate',c:'#17a2b8'}].map((x,i) =>
+      {[
+        {n:data?.total_jobs||0,l:'Jobs found',c:'#4361ee'},
+        {n:ev.total||0,l:'Evaluated',c:'#6f42c1'},
+        {n:st.total||0,l:'Tailored',c:'#20c997'},
+        {n:st.submitted||0,l:'Applied',c:'#fd7e14'},
+        {n:st.interviews||0,l:'Interviews',c:'#28a745'},
+        {n:`${st.callback_rate||0}%`,l:'Callback rate',c:'#17a2b8'},
+      ].map((x,i) =>
         <div key={i} style={s.stat}><div style={{...s.statN,color:x.c}}>{x.n}</div><div style={s.statL}>{x.l}</div></div>)}
     </div>
+    {ev.total > 0 && <div style={s.card}>
+      <h3 style={s.h3}>Evaluation breakdown</h3>
+      <div style={s.grid(150)}>
+        <div style={{...s.stat,borderLeft:'3px solid #28a745'}}><div style={{...s.statN,color:'#28a745',fontSize:22}}>{ev.strong_match||0}</div><div style={s.statL}>Strong (4.5+)</div></div>
+        <div style={{...s.stat,borderLeft:'3px solid #4361ee'}}><div style={{...s.statN,color:'#4361ee',fontSize:22}}>{ev.good_match||0}</div><div style={s.statL}>Good (4.0-4.4)</div></div>
+        <div style={{...s.stat,borderLeft:'3px solid #fd7e14'}}><div style={{...s.statN,color:'#fd7e14',fontSize:22}}>{ev.decent_match||0}</div><div style={s.statL}>Decent (3.5-3.9)</div></div>
+        <div style={{...s.stat,borderLeft:'3px solid #dc3545'}}><div style={{...s.statN,color:'#dc3545',fontSize:22}}>{ev.weak_match||0}</div><div style={s.statL}>Weak (&lt;3.5)</div></div>
+      </div>
+      {ev.avg_score > 0 && <div style={{marginTop:8,fontSize:13,color:'#6c757d',textAlign:'center'}}>Average score: <strong>{ev.avg_score}/5</strong></div>}
+    </div>}
     <div style={s.card}>
       <h3 style={s.h3}>One-click pipeline</h3>
-      <p style={s.sub}>Runs all 5 steps automatically: Discover → Score → Playbook → Tailor → Generate docs</p>
+      <p style={s.sub}>Runs all 6 steps: Discover {'\u2192'} Score {'\u2192'} Playbook {'\u2192'} Tailor {'\u2192'} Evaluate {'\u2192'} Generate docs</p>
       <button style={{...s.btn('#1a1a2e', loading.pipeline), padding:'14px 32px', fontSize:15}} disabled={loading.pipeline}
         onClick={()=>onAction('pipeline')}>
         {loading.pipeline ? 'Running full pipeline...' : 'Run full pipeline'}
@@ -280,17 +298,19 @@ function Dashboard({ data, profile, onAction, loading, onRefresh }) {
     <div style={s.card}>
       <h3 style={s.h3}>Individual steps</h3>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <button style={s.btn('#4361ee', loading.discover)} disabled={loading.discover} onClick={()=>onAction('discover')}>{loading.discover ? 'Discovering...' : '1. Discover'}</button>
+        <button style={s.btn('#4361ee', loading.discover)} disabled={loading.discover} onClick={()=>onAction('discover')}>{loading.discover ? 'Discovering...' : '1. Discover (scrape)'}</button>
+        <button style={s.btn('#17a2b8', loading.scan)} disabled={loading.scan} onClick={()=>onAction('scan')}>{loading.scan ? 'Scanning...' : '1b. Scan portals'}</button>
         <button style={s.btn('#6f42c1', loading.playbook)} disabled={loading.playbook} onClick={()=>onAction('playbook')}>{loading.playbook ? 'Thinking...' : '2. Playbook'}</button>
         <button style={s.btn('#20c997', loading.tailor)} disabled={loading.tailor} onClick={()=>onAction('tailor')}>{loading.tailor ? 'Tailoring...' : '3. Tailor'}</button>
-        <button style={s.btn('#fd7e14', loading.docs)} disabled={loading.docs} onClick={()=>onAction('docs')}>{loading.docs ? 'Generating...' : '4. Gen docs'}</button>
+        <button style={s.btn('#fd7e14', loading.docs)} disabled={loading.docs} onClick={()=>onAction('docs')}>{loading.docs ? 'Generating...' : '4. Gen .docx'}</button>
+        <button style={s.btn('#e83e8c', loading.pdf)} disabled={loading.pdf} onClick={()=>onAction('pdf')}>{loading.pdf ? 'Generating...' : '5. Gen ATS PDF'}</button>
       </div>
     </div>
     {data?.recent_runs?.length > 0 && <div style={s.card}>
       <h3 style={s.h3}>Recent runs</h3>
       {data.recent_runs.map((r,i) => <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid #f1f3f5',fontSize:13}}>
         <span style={{color:'#6c757d'}}>{r.run_type || 'manual'}</span>
-        <span>{r.jobs_discovered||0} found · {r.jobs_new||0} new · {r.jobs_tailored||0} tailored</span>
+        <span>{r.jobs_discovered||0} found {'\u00b7'} {r.jobs_new||0} new {'\u00b7'} {r.jobs_tailored||0} tailored</span>
         <span style={{color:r.status==='completed'?'#28a745':r.status==='failed'?'#dc3545':'#fd7e14',fontWeight:600}}>{r.status}</span>
       </div>)}
     </div>}
@@ -377,12 +397,29 @@ function ResumeStudio({ applications, profile, onRefresh }) {
     setGenerating(aid);
     try { const r = await api(`/generate-docs/${aid}`, {method:'POST'}); alert(`Resume generated: ${r.filename}`); }
     catch (e) { alert(e.message); }
+    try {
+      const d = await api(`/applications/${aid}`);
+      setDetail(d);
+    } catch {}
+    onRefresh?.();
     setGenerating(null);
   };
 
   const hasBullets = (tb) => {
     if (!tb || typeof tb !== 'object') return false;
     return Object.values(tb).some(v => Array.isArray(v) && v.length > 0 && v.some(b => b && b.length > 10));
+  };
+
+  const getFileState = (app) => {
+    if (app?.resume_path && app.resume_path.endsWith('.docx')) return 'ready';
+    if (hasBullets(app?.tailored_bullets)) return 'needs_generation';
+    return 'waiting_on_tailoring';
+  };
+
+  const fileStateBadge = (state) => {
+    if (state === 'ready') return <span style={s.badge('#d4edda','#155724')}>resume ready</span>;
+    if (state === 'needs_generation') return <span style={s.badge('#fff3cd','#856404')}>ready to generate</span>;
+    return <span style={s.badge('#e9ecef','#495057')}>waiting on tailoring</span>;
   };
 
   const baseSections = normalizeResumeBullets(profile?.resume_bullets);
@@ -400,6 +437,7 @@ function ResumeStudio({ applications, profile, onRefresh }) {
       <div style={{maxHeight:600,overflowY:'auto'}}>
         {applications.map(a => {
           const hasContent = hasBullets(a.tailored_bullets);
+          const fileState = getFileState(a);
           return <div key={a.id} style={{padding:'12px 0',borderBottom:'1px solid #f1f3f5'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>loadDetail(a.id)}>
               <div>
@@ -409,25 +447,58 @@ function ResumeStudio({ applications, profile, onRefresh }) {
                   <StatusBadge status={a.apply_status} />
                   <OutcomeBadge outcome={a.outcome} />
                   {hasContent && <span style={s.badge('#d4edda','#155724')}>tailored</span>}
-                  {a.resume_path && a.resume_path.endsWith('.docx') && <span style={s.badge('#cce5ff','#004085')}>.docx ready</span>}
+                  {fileStateBadge(fileState)}
                 </div>
               </div>
               <div style={{display:'flex',gap:6}}>
-                {hasContent && <button style={s.btnO('#4361ee')} onClick={e=>{e.stopPropagation();genDoc(a.id)}}>{generating===a.id?'...':'Generate .docx'}</button>}
+                {hasContent && <button style={s.btnO('#4361ee')} onClick={e=>{e.stopPropagation();genDoc(a.id)}}>{generating===a.id?'Generating...':'Generate .docx'}</button>}
                 <span style={{fontSize:20,color:'#6c757d'}}>{selected===a.id?'−':'+'}</span>
               </div>
             </div>
             {selected===a.id && detail && <div style={{marginTop:16}}>
-              <div style={{background:'#fff',borderRadius:12,padding:16,border:'1px solid #e9ecef',marginBottom:12,display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
-                <div>
-                  <div style={{fontSize:13,fontWeight:700,color:'#1a1a2e',marginBottom:4}}>Generated files</div>
-                  <div style={{fontSize:12,color:'#6c757d'}}>
-                    {detail.resume_path ? fileName(detail.resume_path) : 'No tailored resume file generated yet'}
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))',gap:12,marginBottom:12}}>
+                <div style={{background:'#fff',borderRadius:12,padding:16,border:'1px solid #e9ecef'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:8}}>
+                    <div style={{fontSize:13,fontWeight:700,color:'#1a1a2e'}}>Tailored resume file</div>
+                    {fileStateBadge(getFileState(detail))}
+                  </div>
+                  <div style={{fontSize:12,color:'#6c757d',marginBottom:12}}>
+                    {detail.resume_path ? fileName(detail.resume_path) : hasBullets(detail.tailored_bullets) ? 'Tailored content is ready. Generate the DOCX to create the file.' : 'Resume file will appear here after tailoring finishes and you generate the DOCX.'}
+                  </div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    {detail.resume_path ? (
+                      <>
+                        <a href={fileUrl(`/applications/${a.id}/resume-file`)} target="_blank" rel="noreferrer" style={s.btnO('#1a1a2e')}>Open resume</a>
+                        <a href={fileUrl(`/applications/${a.id}/resume-file`)} download style={s.btnO('#0f766e')}>Download .docx</a>
+                      </>
+                    ) : hasBullets(detail.tailored_bullets) ? (
+                      <button style={s.btnO('#4361ee')} onClick={()=>genDoc(a.id)}>{generating===a.id?'Generating...':'Generate resume file'}</button>
+                    ) : (
+                      <span style={{fontSize:12,color:'#adb5bd'}}>No file action available yet.</span>
+                    )}
                   </div>
                 </div>
-                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                  {detail.resume_path && <a href={fileUrl(`/applications/${a.id}/resume-file`)} target="_blank" rel="noreferrer" style={s.btnO('#1a1a2e')}>Open resume</a>}
-                  {detail.cover_letter_path && <a href={fileUrl(`/applications/${a.id}/cover-letter-file`)} target="_blank" rel="noreferrer" style={s.btnO('#6f42c1')}>Open cover letter</a>}
+
+                <div style={{background:'#fff',borderRadius:12,padding:16,border:'1px solid #e9ecef'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:8}}>
+                    <div style={{fontSize:13,fontWeight:700,color:'#1a1a2e'}}>Cover letter file</div>
+                    {detail.cover_letter_path ? <span style={s.badge('#f3e8ff','#6f42c1')}>ready</span> : <span style={s.badge('#e9ecef','#495057')}>not generated</span>}
+                  </div>
+                  <div style={{fontSize:12,color:'#6c757d',marginBottom:12}}>
+                    {detail.cover_letter_path ? fileName(detail.cover_letter_path) : detail.cover_letter && detail.cover_letter !== 'Not generated yet' ? 'Cover letter text exists, but the DOCX file has not been created yet.' : 'No cover letter file generated for this application yet.'}
+                  </div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    {detail.cover_letter_path ? (
+                      <>
+                        <a href={fileUrl(`/applications/${a.id}/cover-letter-file`)} target="_blank" rel="noreferrer" style={s.btnO('#6f42c1')}>Open cover letter</a>
+                        <a href={fileUrl(`/applications/${a.id}/cover-letter-file`)} download style={s.btnO('#7c3aed')}>Download .docx</a>
+                      </>
+                    ) : hasBullets(detail.tailored_bullets) ? (
+                      <button style={s.btnO('#6f42c1')} onClick={()=>genDoc(a.id)}>{generating===a.id?'Generating...':'Generate files'}</button>
+                    ) : (
+                      <span style={{fontSize:12,color:'#adb5bd'}}>No file action available yet.</span>
+                    )}
+                  </div>
                 </div>
               </div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))',gap:12,marginBottom:12}}>
@@ -542,6 +613,141 @@ function Analytics({ data, applications, onRefresh }) {
   </div>;
 }
 
+// ═══ EVALUATE (Career-Ops A-F Deep Evaluation) ═══
+const EvalScoreBadge = ({ score }) => {
+  if (!score) return null;
+  const c = score >= 4.5 ? ['#d4edda','#155724'] : score >= 4.0 ? ['#cce5ff','#004085'] : score >= 3.5 ? ['#fff3cd','#856404'] : ['#f8d7da','#721c24'];
+  const label = score >= 4.5 ? 'Strong' : score >= 4.0 ? 'Good' : score >= 3.5 ? 'Decent' : 'Weak';
+  return <span style={s.badge(c[0], c[1])}>{score}/5 {label}</span>;
+};
+
+const BLOCK_LABELS = { A: 'Role Summary', B: 'CV Match', C: 'Level Strategy', D: 'Comp & Demand', E: 'Personalization Plan', F: 'Interview Prep' };
+const BLOCK_COLORS = { A: '#4361ee', B: '#6f42c1', C: '#20c997', D: '#fd7e14', E: '#e83e8c', F: '#17a2b8' };
+
+function Evaluate({ jobs, onRefresh }) {
+  const [evaluations, setEvaluations] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [evaluating, setEvaluating] = useState(false);
+  const [batchEval, setBatchEval] = useState(false);
+  const [scanning, setScanning] = useState(false);
+
+  useEffect(() => {
+    api('/evaluations?limit=200').then(setEvaluations).catch(() => {});
+  }, []);
+
+  const evalOne = async (jid) => {
+    setEvaluating(jid);
+    try { const r = await api(`/evaluate/${jid}`, {method:'POST'}); setEvaluations(prev => [r, ...prev.filter(e => e.job_id !== jid)]); setSelected(jid); }
+    catch (e) { alert(e.message); }
+    setEvaluating(false);
+  };
+
+  const evalBatch = async () => {
+    setBatchEval(true);
+    try { const r = await api('/evaluate/batch?limit=10', {method:'POST'}); alert(`Evaluating ${r.jobs_queued} jobs in background`); }
+    catch (e) { alert(e.message); }
+    setBatchEval(false);
+  };
+
+  const scanPortals = async () => {
+    setScanning(true);
+    try { const r = await api('/scan/portals', {method:'POST'}); alert(`Portal scan started: ${r.run_id}`); onRefresh(); }
+    catch (e) { alert(e.message); }
+    setScanning(false);
+  };
+
+  const genPdf = async (aid) => {
+    try { const r = await api(`/generate-pdf/${aid}`, {method:'POST'}); alert(`Generated: ${r.filename} (${r.format})`); }
+    catch (e) { alert(e.message); }
+  };
+
+  const getEval = (jid) => evaluations.find(e => e.job_id === jid);
+
+  return <div>
+    <div style={s.card}>
+      <h3 style={s.h3}>Career-Ops Actions</h3>
+      <p style={s.sub}>Deep A-F evaluation, portal scanning, and batch processing powered by career-ops intelligence.</p>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <button style={s.btn('#4361ee', scanning)} disabled={scanning} onClick={scanPortals}>{scanning ? 'Scanning...' : 'Scan portals (Greenhouse API)'}</button>
+        <button style={s.btn('#6f42c1', batchEval)} disabled={batchEval} onClick={evalBatch}>{batchEval ? 'Evaluating...' : 'Evaluate top 10 jobs (A-F)'}</button>
+        <button style={s.btnO('#20c997')} onClick={() => { api('/evaluate/batch?limit=10', {method:'POST'}).then(() => api('/batch/evaluate-and-tailor?limit=10', {method:'POST'})).then(r => alert(`Full batch started: ${r.run_id}`)).catch(e => alert(e.message)); }}>Full batch: Evaluate + Tailor</button>
+      </div>
+    </div>
+
+    {evaluations.length > 0 && <div style={s.card}>
+      <h3 style={s.h3}>Evaluation summary</h3>
+      <div style={s.grid(140)}>
+        <div style={s.stat}><div style={{...s.statN,color:'#28a745'}}>{evaluations.filter(e => e.global_score >= 4.5).length}</div><div style={s.statL}>Strong (4.5+)</div></div>
+        <div style={s.stat}><div style={{...s.statN,color:'#4361ee'}}>{evaluations.filter(e => e.global_score >= 4.0 && e.global_score < 4.5).length}</div><div style={s.statL}>Good (4.0-4.4)</div></div>
+        <div style={s.stat}><div style={{...s.statN,color:'#fd7e14'}}>{evaluations.filter(e => e.global_score >= 3.5 && e.global_score < 4.0).length}</div><div style={s.statL}>Decent (3.5-3.9)</div></div>
+        <div style={s.stat}><div style={{...s.statN,color:'#dc3545'}}>{evaluations.filter(e => e.global_score < 3.5 && e.global_score > 0).length}</div><div style={s.statL}>Weak (&lt;3.5)</div></div>
+        <div style={s.stat}><div style={{...s.statN,color:'#1a1a2e'}}>{evaluations.length}</div><div style={s.statL}>Total evaluated</div></div>
+      </div>
+    </div>}
+
+    <div style={s.card}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+        <h3 style={{...s.h3,margin:0}}>Jobs ({jobs.length}) — click to evaluate</h3>
+        <button style={s.btnO()} onClick={() => { api('/evaluations?limit=200').then(setEvaluations).catch(() => {}); onRefresh(); }}>Refresh</button>
+      </div>
+      <div style={{maxHeight:600,overflowY:'auto'}}>
+        {jobs.map(j => {
+          const ev = getEval(j.id);
+          return <div key={j.id} style={{padding:'12px 0',borderBottom:'1px solid #f1f3f5'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSelected(selected===j.id?null:j.id)}>
+              <div>
+                <div style={{fontSize:14,fontWeight:600}}>{j.title} <span style={{fontWeight:400,color:'#6c757d'}}>at {j.company}</span></div>
+                <div style={{display:'flex',gap:6,marginTop:4}}>
+                  <ScoreBadge score={j.match_score} />
+                  {ev && <EvalScoreBadge score={ev.global_score} />}
+                  {ev?.archetype && <span style={s.badge('#e8eafc','#4361ee')}>{ev.archetype}</span>}
+                  {ev?.keywords?.length > 0 && <span style={s.badge('#f3e8ff','#6f42c1')}>{ev.keywords.length} keywords</span>}
+                </div>
+              </div>
+              <div style={{display:'flex',gap:6}}>
+                {!ev && <button style={s.btnO('#6f42c1')} onClick={e=>{e.stopPropagation();evalOne(j.id)}} disabled={evaluating===j.id}>{evaluating===j.id?'Evaluating...':'Evaluate A-F'}</button>}
+                <span style={{fontSize:20,color:'#6c757d'}}>{selected===j.id?'\u2212':'+'}</span>
+              </div>
+            </div>
+            {selected===j.id && ev && <div style={{marginTop:16}}>
+              {/* Scores grid */}
+              {ev.scores && Object.keys(ev.scores).length > 0 && <div style={{marginBottom:16}}>
+                <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Dimension Scores</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                  {Object.entries(ev.scores).map(([dim, score]) =>
+                    <div key={dim} style={{background: score >= 4 ? '#d4edda' : score >= 3 ? '#fff3cd' : '#f8d7da', borderRadius:8, padding:'6px 12px', fontSize:12}}>
+                      <div style={{fontWeight:600}}>{dim.replace(/_/g,' ')}</div>
+                      <div style={{fontSize:16,fontWeight:700}}>{score}/5</div>
+                    </div>
+                  )}
+                </div>
+              </div>}
+              {/* Keywords */}
+              {ev.keywords?.length > 0 && <div style={{marginBottom:16}}>
+                <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>ATS Keywords</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                  {ev.keywords.map((kw,i) => <span key={i} style={s.badge('#e8eafc','#4361ee')}>{kw}</span>)}
+                </div>
+              </div>}
+              {/* A-F Blocks */}
+              {ev.blocks && Object.entries(ev.blocks).filter(([,v]) => v).map(([block, content]) =>
+                <div key={block} style={{marginBottom:16,background:'#f8f9fa',borderRadius:12,padding:16,borderLeft:`4px solid ${BLOCK_COLORS[block]||'#6c757d'}`}}>
+                  <div style={{fontSize:14,fontWeight:700,color:BLOCK_COLORS[block]||'#1a1a2e',marginBottom:8}}>Block {block}: {BLOCK_LABELS[block]||block}</div>
+                  <div style={{fontSize:13,lineHeight:1.7,color:'#333',whiteSpace:'pre-wrap'}}>{content}</div>
+                </div>
+              )}
+            </div>}
+            {selected===j.id && !ev && <div style={{marginTop:12,padding:16,background:'#f8f9fa',borderRadius:8,textAlign:'center'}}>
+              <p style={{color:'#6c757d',fontSize:13,marginBottom:8}}>No evaluation yet. Click "Evaluate A-F" to run a deep analysis.</p>
+              <button style={s.btn('#6f42c1', evaluating===j.id)} disabled={evaluating===j.id} onClick={()=>evalOne(j.id)}>{evaluating===j.id?'Evaluating...':'Run A-F Evaluation'}</button>
+            </div>}
+          </div>;
+        })}
+      </div>
+    </div>
+  </div>;
+}
+
 // ═══ MAIN APP ═══
 export default function App() {
   const [page, setPage] = useState('dashboard');
@@ -566,11 +772,13 @@ export default function App() {
   const action = async (type) => {
     setLoading(p => ({...p, [type]: true})); setStatus('');
     try {
-      if (type === 'pipeline') { const r = await api('/pipeline', {method:'POST'}); setStatus(`Full pipeline started (${r.run_id}). Steps: ${r.steps.join(' → ')}`); }
+      if (type === 'pipeline') { const r = await api('/pipeline', {method:'POST'}); setStatus(`Full pipeline started (${r.run_id}). Steps: ${r.steps.join(' \u2192 ')}`); }
       else if (type === 'discover') { const r = await api('/discover', {method:'POST'}); setStatus(`Discovery started: ${r.run_id}`); }
+      else if (type === 'scan') { const r = await api('/scan/portals', {method:'POST'}); setStatus(`Portal scan started: ${r.run_id}`); }
       else if (type === 'playbook') { const r = await api('/playbook', {method:'POST'}); setStatus(`Playbook ready: ${r.jobs} jobs analyzed`); }
       else if (type === 'tailor') { const r = await api('/tailor', {method:'POST'}); setStatus(`Tailored ${r.tailored} resumes`); }
       else if (type === 'docs') { const r = await api('/docs-batch', {method:'POST'}); setStatus(`Generated ${r.generated} documents`); }
+      else if (type === 'pdf') { const r = await api('/generate-pdf/batch', {method:'POST'}); setStatus(`Generated ${r.generated} ATS PDFs`); }
       setTimeout(refresh, 3000);
     } catch (e) { setStatus(`Error: ${e.message}`); }
     setLoading(p => ({...p, [type]: false}));
@@ -579,17 +787,18 @@ export default function App() {
   if (needsOnboarding === null) return <div style={{...s.page,display:'flex',alignItems:'center',justifyContent:'center'}}><p>Loading...</p></div>;
   if (needsOnboarding) return <div style={s.page}><Onboarding onComplete={()=>{setNeedsOnboarding(false);refresh()}} /></div>;
 
-  const pages = ['dashboard','jobs','resumes','apply','analytics'];
+  const pages = ['dashboard','jobs','evaluate','resumes','apply','analytics'];
   return <div style={s.page}>
     <div style={s.nav}>
       <span style={s.logo}>AutoApply</span>
       <div style={s.tabs}>{pages.map(p => <button key={p} style={s.tab(page===p)} onClick={()=>setPage(p)}>{p.charAt(0).toUpperCase()+p.slice(1)}</button>)}</div>
-      <div style={{fontSize:12,color:'#6c757d'}}>{data?.total_jobs||0} jobs · {data?.applications?.total||0} apps</div>
+      <div style={{fontSize:12,color:'#6c757d'}}>{data?.total_jobs||0} jobs {'\u00b7'} {data?.applications?.total||0} apps {data?.evaluations?.total ? `\u00b7 ${data.evaluations.total} evaluated` : ''}</div>
     </div>
     {status && <div style={{margin:'16px 24px 0',padding:'10px 16px',background:status.includes('Error')?'#f8d7da':'#d4edda',borderRadius:8,fontSize:13,color:status.includes('Error')?'#721c24':'#155724'}}>{status}</div>}
     <div style={{padding:'20px 24px',maxWidth:1000,margin:'0 auto'}}>
       {page==='dashboard' && <Dashboard data={data} profile={profile} onAction={action} loading={loading} onRefresh={refresh} />}
       {page==='jobs' && <Jobs jobs={jobs} onRefresh={refresh} />}
+      {page==='evaluate' && <Evaluate jobs={jobs} onRefresh={refresh} />}
       {page==='resumes' && <ResumeStudio applications={apps} profile={profile} onRefresh={refresh} />}
       {page==='apply' && <AutoApply applications={apps} />}
       {page==='analytics' && <Analytics data={analyticsData} applications={apps} onRefresh={refresh} />}

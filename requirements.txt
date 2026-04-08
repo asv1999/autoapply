@@ -8,3 +8,6 @@ playwright==1.48.0
 beautifulsoup4==4.12.3
 apscheduler==3.10.4
 groq==0.12.0
+# Career-Ops integration
+weasyprint==62.3
+pyyaml==6.0.2

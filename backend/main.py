@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import settings
-from database import init_db, ProfileDB, JobDB, ApplicationDB, ConnectionDB, RunDB
+from database import init_db, ProfileDB, JobDB, ApplicationDB, ConnectionDB, RunDB, EvaluationDB
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -381,15 +381,143 @@ async def export_training():
     n = FineTuningExporter.export_jsonl()
     return {"exported":n,"path":"data/fine_tuning.jsonl"}
 
+# ═══ A-F EVALUATION (Career-Ops Integration) ═══
+class EvalRequest(BaseModel):
+    jd_text: str = ""
+
+@app.post("/api/evaluate/{jid}")
+async def evaluate_job(jid: int, req: EvalRequest = None):
+    """Run full A-F evaluation on a single job."""
+    job = JobDB.get_by_id(jid)
+    if not job: raise HTTPException(404, "Job not found")
+    profile = ProfileDB.get(1)
+    if not profile: raise HTTPException(400, "Create profile first")
+    llm = get_llm(); await llm.init()
+    from intelligence.evaluator import JobEvaluator
+    evaluator = JobEvaluator(llm)
+    jd = req.jd_text if req else ""
+    result = await evaluator.evaluate(profile, job, jd)
+    # Save to DB
+    eid = EvaluationDB.create(result)
+    return {"evaluation_id": eid, **result}
+
+@app.post("/api/evaluate/batch")
+async def evaluate_batch(bg: BackgroundTasks, limit: int = 10):
+    """Evaluate top unapplied jobs."""
+    profile = ProfileDB.get(1)
+    if not profile: raise HTTPException(400, "Create profile first")
+    jobs = JobDB.get_unapplied(limit)
+    if not jobs: raise HTTPException(400, "No unapplied jobs")
+    # Sort by match_score descending
+    jobs.sort(key=lambda j: j.get("match_score", 0) or 0, reverse=True)
+    jobs = jobs[:limit]
+    async def _run():
+        llm = get_llm(); await llm.init()
+        from intelligence.evaluator import JobEvaluator
+        evaluator = JobEvaluator(llm)
+        results = await evaluator.evaluate_batch(profile, jobs)
+        for r in results:
+            try:
+                EvaluationDB.create(r)
+            except Exception as e:
+                logger.error(f"Failed to save evaluation: {e}")
+    bg.add_task(_run)
+    return {"status": "started", "jobs_queued": len(jobs)}
+
+@app.get("/api/evaluations")
+async def get_evaluations(limit: int = 200):
+    """List all evaluations sorted by score."""
+    return EvaluationDB.get_all(limit)
+
+@app.get("/api/evaluations/{jid}")
+async def get_evaluation(jid: int):
+    """Get evaluation for a specific job."""
+    e = EvaluationDB.get_by_job(jid)
+    if not e: raise HTTPException(404, "No evaluation found for this job")
+    return e
+
+@app.get("/api/evaluations/stats")
+async def evaluation_stats():
+    """Get evaluation statistics."""
+    return EvaluationDB.get_stats()
+
+# ═══ ATS PDF GENERATION ═══
+@app.post("/api/generate-pdf/{aid}")
+async def gen_pdf(aid: int):
+    """Generate ATS-optimized PDF resume for an application."""
+    a = ApplicationDB.get_by_id(aid)
+    if not a: raise HTTPException(404)
+    job = JobDB.get_by_id(a["job_id"])
+    if not job: raise HTTPException(404, "Job not found")
+    profile = ProfileDB.get(a.get("profile_id", 1))
+    if not profile: raise HTTPException(400, "Profile not found")
+
+    # Get keywords from evaluation if available
+    evaluation = EvaluationDB.get_by_job(a["job_id"])
+    keywords = evaluation.get("keywords", []) if evaluation else []
+
+    from documents.pdf_gen import generate_pdf_resume, generate_pdf_cover_letter
+    fp, fn = generate_pdf_resume(profile, a, job, keywords)
+    cl_fp, _ = generate_pdf_cover_letter(profile, a, job)
+
+    if fp:
+        from database import get_db
+        conn = get_db()
+        conn.execute("UPDATE applications SET resume_path=?, cover_letter_path=? WHERE id=?",
+                     (fp, cl_fp, aid))
+        conn.commit(); conn.close()
+
+    return {"path": fp, "filename": fn, "cover_letter_path": cl_fp, "format": "pdf" if fp and fp.endswith(".pdf") else "html"}
+
+@app.post("/api/generate-pdf/batch")
+async def gen_pdf_batch():
+    """Generate ATS PDFs for all applications with content."""
+    profile = ProfileDB.get(1)
+    if not profile: raise HTTPException(400, "Create profile first")
+    from documents.pdf_gen import generate_pdf_resume, generate_pdf_cover_letter
+    apps = ApplicationDB.get_all(limit=500)
+    generated = 0
+    for a in apps:
+        tb = a.get("tailored_bullets", {})
+        if isinstance(tb, str):
+            try: tb = json.loads(tb)
+            except: continue
+        has_content = any(isinstance(v, list) and len(v) > 0 and any(len(str(b)) > 20 for b in v) for v in tb.values())
+        if not has_content:
+            continue
+        try:
+            job = JobDB.get_by_id(a["job_id"])
+            if not job: continue
+            evaluation = EvaluationDB.get_by_job(a["job_id"])
+            keywords = evaluation.get("keywords", []) if evaluation else []
+            fp, _ = generate_pdf_resume(profile, a, job, keywords)
+            cl_fp, _ = generate_pdf_cover_letter(profile, a, job)
+            if fp:
+                from database import get_db
+                conn = get_db()
+                conn.execute("UPDATE applications SET resume_path=?, cover_letter_path=? WHERE id=?",
+                             (fp, cl_fp, a["id"]))
+                conn.commit(); conn.close()
+                generated += 1
+        except Exception as e:
+            logger.error(f"PDF gen failed for app {a['id']}: {e}")
+    return {"generated": generated, "total": len(apps), "format": "pdf"}
+
 # ═══ DASHBOARD ═══
 @app.get("/api/dashboard")
 async def dashboard():
     recent_runs = RunDB.get_recent(5)
     if not recent_runs:
         recent_runs = _derive_recent_runs(5)
+    eval_stats = {}
+    try:
+        eval_stats = EvaluationDB.get_stats()
+    except:
+        pass
     return {
         "total_jobs": JobDB.count(),
         "applications": ApplicationDB.get_stats(),
+        "evaluations": eval_stats,
         "recent_runs": recent_runs,
         "profile_exists": ProfileDB.exists(),
     }
@@ -470,6 +598,54 @@ async def gen_docs_batch():
 async def docs_batch():
     return await gen_docs_batch()
 
+# ═══ PORTAL SCANNING (Career-Ops Integration) ═══
+@app.post("/api/scan/portals")
+async def scan_portals(bg: BackgroundTasks):
+    """Multi-level portal scanner: Greenhouse API + tracked companies."""
+    rid = str(uuid.uuid4())[:8]
+    RunDB.create(rid, rtype="portal_scan")
+    async def _run():
+        from discovery.engine import PortalScanner
+        scanner = PortalScanner()
+        try:
+            result = await scanner.scan_all()
+            RunDB.update(rid, status="completed", completed_at=datetime.now().isoformat(),
+                        jobs_discovered=result["total_found"], jobs_new=result["new_added"])
+            # Auto-score new jobs
+            await _score_new_jobs()
+        except Exception as e:
+            RunDB.update(rid, status="failed")
+            logger.error(f"Portal scan failed: {e}")
+    bg.add_task(_run)
+    return {"run_id": rid, "status": "started"}
+
+# ═══ BATCH PROCESSING (Career-Ops Integration) ═══
+@app.post("/api/batch/evaluate-and-tailor")
+async def batch_evaluate_and_tailor(bg: BackgroundTasks, limit: int = 10):
+    """Full career-ops pipeline: evaluate A-F -> filter by score -> tailor -> save."""
+    profile = ProfileDB.get(1)
+    if not profile: raise HTTPException(400, "Create profile first")
+    jobs = JobDB.get_unapplied(limit)
+    if not jobs: raise HTTPException(400, "No unapplied jobs")
+    jobs.sort(key=lambda j: j.get("match_score", 0) or 0, reverse=True)
+    jobs = jobs[:limit]
+    rid = str(uuid.uuid4())[:8]
+    RunDB.create(rid, rtype="batch_eval_tailor")
+    async def _run():
+        llm = get_llm(); await llm.init()
+        from intelligence.batch import BatchProcessor
+        processor = BatchProcessor(llm, profile)
+        try:
+            result = await processor.run_full_pipeline(jobs, rid)
+            RunDB.update(rid, status="completed", completed_at=datetime.now().isoformat(),
+                        jobs_tailored=result.get("tailored", 0))
+            logger.info(f"Batch complete: {result}")
+        except Exception as e:
+            RunDB.update(rid, status="failed")
+            logger.error(f"Batch failed: {e}")
+    bg.add_task(_run)
+    return {"run_id": rid, "status": "started", "jobs_queued": len(jobs)}
+
 # ═══ ONE-CLICK PIPELINE ═══
 @app.post("/api/pipeline")
 async def run_pipeline(bg: BackgroundTasks):
@@ -534,14 +710,29 @@ async def run_pipeline(bg: BackgroundTasks):
                 RunDB.update(rid, jobs_tailored=tailored)
             except Exception as e:
                 logger.error(f"Pipeline tailor: {e}")
-        # Step 5: Generate docs
+        # Step 5: Evaluate top jobs (A-F)
+        try:
+            eval_jobs = JobDB.get_unapplied(10)
+            eval_jobs.sort(key=lambda j: j.get("match_score", 0) or 0, reverse=True)
+            eval_jobs = eval_jobs[:5]  # Top 5 for pipeline speed
+            if eval_jobs:
+                llm3 = get_llm(); await llm3.init()
+                from intelligence.evaluator import JobEvaluator
+                evaluator = JobEvaluator(llm3)
+                eval_results = await evaluator.evaluate_batch(profile, eval_jobs)
+                for er in eval_results:
+                    try: EvaluationDB.create(er)
+                    except: pass
+        except Exception as e:
+            logger.error(f"Pipeline evaluate: {e}")
+        # Step 6: Generate docs
         try:
             await gen_docs_batch()
         except Exception as e:
             logger.error(f"Pipeline gen_docs: {e}")
         RunDB.update(rid, status="completed", completed_at=datetime.now().isoformat())
     bg.add_task(_run)
-    return {"run_id": rid, "status": "started", "steps": ["discover", "score", "playbook", "tailor", "generate_docs"]}
+    return {"run_id": rid, "status": "started", "steps": ["discover", "score", "playbook", "tailor", "evaluate", "generate_docs"]}
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,0 +1,162 @@
+# AutoApply Portal Scanner Configuration
+# Multi-level discovery: Greenhouse API, Ashby, Lever, and direct career pages
+
+# Title filters for relevance
+title_filter:
+  positive:
+    - strategy
+    - operations
+    - analyst
+    - consulting
+    - consultant
+    - transformation
+    - business
+    - product
+    - data
+    - intelligence
+    - ai
+    - manager
+    - solutions
+    - architect
+  negative:
+    - senior director
+    - vp
+    - vice president
+    - intern
+    - junior
+    - principal
+    - staff engineer
+    - devops
+    - sre
+    - nurse
+    - physician
+    - legal counsel
+  seniority_boost:
+    - senior
+    - lead
+    - staff
+    - principal
+
+# Tracked companies with Greenhouse API access
+tracked_companies:
+  - name: Anthropic
+    slug: anthropic
+    platform: greenhouse
+    enabled: true
+
+  - name: OpenAI
+    slug: openai
+    platform: greenhouse
+    enabled: true
+
+  - name: Scale AI
+    slug: scaleai
+    platform: greenhouse
+    enabled: true
+
+  - name: Stripe
+    slug: stripe
+    platform: greenhouse
+    enabled: true
+
+  - name: Notion
+    slug: notion
+    platform: greenhouse
+    enabled: true
+
+  - name: Figma
+    slug: figma
+    platform: greenhouse
+    enabled: true
+
+  - name: Palantir
+    slug: palantir
+    platform: greenhouse
+    enabled: true
+
+  - name: Datadog
+    slug: datadog
+    platform: greenhouse
+    enabled: true
+
+  - name: MongoDB
+    slug: mongodb
+    platform: greenhouse
+    enabled: true
+
+  - name: Confluent
+    slug: confluent
+    platform: greenhouse
+    enabled: true
+
+  - name: HashiCorp
+    slug: hashicorp
+    platform: greenhouse
+    enabled: true
+
+  - name: Databricks
+    slug: databricks
+    platform: greenhouse
+    enabled: true
+
+  - name: Snowflake
+    slug: snowflakecomputing
+    platform: greenhouse
+    enabled: true
+
+  - name: Anduril
+    slug: andurilindustries
+    platform: greenhouse
+    enabled: true
+
+  - name: Ramp
+    slug: ramp
+    platform: greenhouse
+    enabled: true
+
+  - name: Plaid
+    slug: plaid
+    platform: greenhouse
+    enabled: true
+
+  - name: Airtable
+    slug: airtable
+    platform: greenhouse
+    enabled: true
+
+  - name: Rippling
+    slug: rippling
+    platform: greenhouse
+    enabled: true
+
+  - name: Brex
+    slug: brex
+    platform: greenhouse
+    enabled: true
+
+  - name: Weights & Biases
+    slug: wandb
+    platform: greenhouse
+    enabled: true
+
+# WebSearch queries for broad discovery (Level 3)
+search_queries:
+  - query: 'site:jobs.ashbyhq.com "strategy" OR "operations" OR "consulting"'
+    name: "Ashby - Strategy"
+    enabled: true
+
+  - query: 'site:jobs.lever.co "business transformation" OR "strategy analyst"'
+    name: "Lever - BizTransform"
+    enabled: true
+
+  - query: 'site:boards.greenhouse.io "AI" "strategy" "operations"'
+    name: "Greenhouse - AI Strategy"
+    enabled: true
+
+  - query: 'site:jobs.ashbyhq.com "product manager" "AI" OR "ML"'
+    name: "Ashby - AI PM"
+    enabled: true
+
+  - query: 'site:jobs.lever.co "solutions architect" OR "forward deployed"'
+    name: "Lever - SA/FDE"
+    enabled: true

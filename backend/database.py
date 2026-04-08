@@ -71,13 +71,48 @@ def init_db():
             outreach_message TEXT, status TEXT DEFAULT 'pending',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER REFERENCES jobs(id),
+            profile_id INTEGER DEFAULT 1,
+            archetype TEXT,
+            global_score REAL DEFAULT 0,
+            scores TEXT,
+            block_a TEXT, block_b TEXT, block_c TEXT,
+            block_d TEXT, block_e TEXT, block_f TEXT,
+            keywords TEXT,
+            raw_evaluation TEXT,
+            tokens_used INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(job_id, profile_id)
+        );
         CREATE INDEX IF NOT EXISTS idx_jobs_dedup ON jobs(dedup_key);
         CREATE INDEX IF NOT EXISTS idx_apps_status ON applications(apply_status);
         CREATE INDEX IF NOT EXISTS idx_apps_outcome ON applications(outcome);
+        CREATE INDEX IF NOT EXISTS idx_evals_job ON evaluations(job_id);
+        CREATE INDEX IF NOT EXISTS idx_evals_score ON evaluations(global_score);
     """)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(profiles)").fetchall()}
     if "cover_letter_template_path" not in cols:
         conn.execute("ALTER TABLE profiles ADD COLUMN cover_letter_template_path TEXT")
+    # Check if evaluations table exists (migration for existing DBs)
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "evaluations" not in tables:
+        conn.execute("""CREATE TABLE IF NOT EXISTS evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER REFERENCES jobs(id),
+            profile_id INTEGER DEFAULT 1,
+            archetype TEXT,
+            global_score REAL DEFAULT 0,
+            scores TEXT,
+            block_a TEXT, block_b TEXT, block_c TEXT,
+            block_d TEXT, block_e TEXT, block_f TEXT,
+            keywords TEXT,
+            raw_evaluation TEXT,
+            tokens_used INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(job_id, profile_id)
+        )""")
     conn.commit(); conn.close()
 
 class ProfileDB:
@@ -304,6 +339,103 @@ class ApplicationDB:
         s["callback_rate"] = round(s["callbacks"] / sub * 100, 1)
         s["interview_rate"] = round(s["interviews"] / sub * 100, 1)
         conn.close(); return s
+
+class EvaluationDB:
+    @staticmethod
+    def create(data: Dict) -> int:
+        conn = get_db()
+        scores = data.get("scores", {})
+        if not isinstance(scores, str):
+            scores = json.dumps(scores)
+        keywords = data.get("keywords", [])
+        if not isinstance(keywords, str):
+            keywords = json.dumps(keywords)
+        blocks = data.get("blocks", {})
+        cur = conn.execute(
+            """INSERT OR REPLACE INTO evaluations
+            (job_id, profile_id, archetype, global_score, scores,
+             block_a, block_b, block_c, block_d, block_e, block_f,
+             keywords, raw_evaluation, tokens_used)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (data.get("job_id"), data.get("profile_id", 1),
+             data.get("archetype"), data.get("global_score", 0),
+             scores,
+             blocks.get("A", ""), blocks.get("B", ""), blocks.get("C", ""),
+             blocks.get("D", ""), blocks.get("E", ""), blocks.get("F", ""),
+             keywords, data.get("raw_evaluation", ""),
+             data.get("tokens", 0)))
+        conn.commit()
+        eid = cur.lastrowid
+        conn.close()
+        return eid
+
+    @staticmethod
+    def get_by_job(jid: int) -> Optional[Dict]:
+        conn = get_db()
+        row = conn.execute("SELECT * FROM evaluations WHERE job_id=? ORDER BY created_at DESC LIMIT 1", (jid,)).fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        for k in ("scores", "keywords"):
+            if d.get(k) and isinstance(d[k], str):
+                try:
+                    d[k] = json.loads(d[k])
+                except:
+                    pass
+        # Reconstruct blocks dict
+        d["blocks"] = {}
+        for letter in "ABCDEF":
+            key = f"block_{letter.lower()}"
+            if d.get(key):
+                d["blocks"][letter] = d[key]
+        return d
+
+    @staticmethod
+    def get_all(limit: int = 200) -> List[Dict]:
+        conn = get_db()
+        rows = conn.execute(
+            """SELECT e.*, j.title, j.company, j.location, j.url
+            FROM evaluations e JOIN jobs j ON e.job_id = j.id
+            ORDER BY e.global_score DESC, e.created_at DESC LIMIT ?""",
+            (limit,)).fetchall()
+        conn.close()
+        results = []
+        for r in rows:
+            d = dict(r)
+            for k in ("scores", "keywords"):
+                if d.get(k) and isinstance(d[k], str):
+                    try:
+                        d[k] = json.loads(d[k])
+                    except:
+                        pass
+            d["blocks"] = {}
+            for letter in "ABCDEF":
+                key = f"block_{letter.lower()}"
+                if d.get(key):
+                    d["blocks"][letter] = d[key]
+            results.append(d)
+        return results
+
+    @staticmethod
+    def get_stats() -> Dict:
+        conn = get_db()
+        total = conn.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0]
+        strong = conn.execute("SELECT COUNT(*) FROM evaluations WHERE global_score >= 4.5").fetchone()[0]
+        good = conn.execute("SELECT COUNT(*) FROM evaluations WHERE global_score >= 4.0 AND global_score < 4.5").fetchone()[0]
+        decent = conn.execute("SELECT COUNT(*) FROM evaluations WHERE global_score >= 3.5 AND global_score < 4.0").fetchone()[0]
+        weak = conn.execute("SELECT COUNT(*) FROM evaluations WHERE global_score < 3.5").fetchone()[0]
+        avg = conn.execute("SELECT AVG(global_score) FROM evaluations WHERE global_score > 0").fetchone()[0]
+        conn.close()
+        return {
+            "total": total,
+            "strong_match": strong,
+            "good_match": good,
+            "decent_match": decent,
+            "weak_match": weak,
+            "avg_score": round(avg or 0, 2),
+        }
+
 
 class ConnectionDB:
     @staticmethod

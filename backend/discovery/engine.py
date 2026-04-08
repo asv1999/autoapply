@@ -1,7 +1,7 @@
-"""Layer 1: Discovery Engine — Scraping + Dedup"""
-import re, logging
+"""Layer 1: Discovery Engine — Multi-Level Scraping + Portal Scanning + Dedup"""
+import re, logging, httpx, asyncio, json
 from abc import ABC, abstractmethod
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,128 @@ class GlassdoorScraper(BaseScraper):
                 except: continue
         except Exception as e: logger.error(f"Glassdoor: {e}")
         return jobs
+
+class GreenhouseAPIScraper:
+    """Level 2: Greenhouse API scraper for structured job data."""
+
+    TITLE_POSITIVE = ["strategy", "operations", "analyst", "consulting", "transformation",
+                      "business", "product", "data", "intelligence", "ai", "manager",
+                      "solutions", "architect", "pm"]
+    TITLE_NEGATIVE = ["senior director", "vp ", "vice president", "intern ", "junior",
+                      "principal", "staff engineer", "devops", "sre"]
+
+    @staticmethod
+    async def scrape(company_slug: str, company_name: str = "") -> List[Dict]:
+        """Fetch jobs from Greenhouse API."""
+        jobs = []
+        url = f"https://boards-api.greenhouse.io/v1/boards/{company_slug}/jobs"
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(url)
+                if r.status_code != 200:
+                    logger.warning(f"Greenhouse API {company_slug}: HTTP {r.status_code}")
+                    return []
+                data = r.json()
+                for j in data.get("jobs", []):
+                    title = j.get("title", "")
+                    if not GreenhouseAPIScraper._title_passes(title):
+                        continue
+                    loc_name = ""
+                    if j.get("location"):
+                        loc_name = j["location"].get("name", "")
+                    jobs.append({
+                        "title": title,
+                        "company": company_name or company_slug,
+                        "location": loc_name,
+                        "url": j.get("absolute_url", ""),
+                        "source": "greenhouse_api",
+                        "requirements": [],
+                        "decision_maker": "",
+                    })
+        except Exception as e:
+            logger.error(f"Greenhouse API {company_slug}: {e}")
+        return jobs
+
+    @staticmethod
+    def _title_passes(title: str) -> bool:
+        lower = title.lower()
+        if any(neg in lower for neg in GreenhouseAPIScraper.TITLE_NEGATIVE):
+            return False
+        return any(pos in lower for pos in GreenhouseAPIScraper.TITLE_POSITIVE)
+
+
+class PortalScanner:
+    """Level 1+2+3 multi-level portal scanner inspired by career-ops scan mode."""
+
+    # Default tracked companies with their career page URLs and platforms
+    DEFAULT_PORTALS = [
+        {"name": "Anthropic", "slug": "anthropic", "platform": "greenhouse"},
+        {"name": "OpenAI", "slug": "openai", "platform": "greenhouse"},
+        {"name": "Scale AI", "slug": "scaleai", "platform": "greenhouse"},
+        {"name": "Datadog", "slug": "datadog", "platform": "greenhouse"},
+        {"name": "Stripe", "slug": "stripe", "platform": "greenhouse"},
+        {"name": "Notion", "slug": "notion", "platform": "greenhouse"},
+        {"name": "Figma", "slug": "figma", "platform": "greenhouse"},
+        {"name": "Palantir", "slug": "palantir", "platform": "greenhouse"},
+    ]
+
+    def __init__(self, portals: List[Dict] = None, headless: bool = True):
+        self.portals = portals or self._load_portals()
+        self.headless = headless
+
+    @staticmethod
+    def _load_portals() -> List[Dict]:
+        """Load portals from config/portals.yml if available."""
+        import os
+        config_paths = [
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config", "portals.yml"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "portals.yml"),
+        ]
+        for path in config_paths:
+            if os.path.exists(path):
+                try:
+                    import yaml
+                    with open(path) as f:
+                        data = yaml.safe_load(f)
+                    companies = data.get("tracked_companies", [])
+                    return [c for c in companies if c.get("enabled", True)]
+                except ImportError:
+                    logger.warning("PyYAML not installed, using default portals")
+                except Exception as e:
+                    logger.warning(f"Failed to load portals.yml: {e}")
+        return PortalScanner.DEFAULT_PORTALS
+
+    async def scan_all(self) -> Dict:
+        """Run all scan levels and return aggregated results."""
+        all_jobs = []
+        scan_stats = {"level_1": 0, "level_2": 0, "level_3": 0, "filtered": 0, "new": 0}
+
+        # Level 2: Greenhouse API (fast, structured)
+        greenhouse_portals = [p for p in self.portals if p.get("platform") == "greenhouse"]
+        for portal in greenhouse_portals:
+            try:
+                jobs = await GreenhouseAPIScraper.scrape(portal["slug"], portal["name"])
+                all_jobs.extend(jobs)
+                scan_stats["level_2"] += len(jobs)
+                logger.info(f"Greenhouse {portal['name']}: {len(jobs)} jobs found")
+            except Exception as e:
+                logger.error(f"Portal scan {portal['name']}: {e}")
+            await asyncio.sleep(0.5)  # Be polite
+
+        # Dedup and insert
+        new, dupes = DeduplicationEngine.filter_new(all_jobs)
+        from database import JobDB
+        result = JobDB.insert_batch(new)
+        scan_stats["new"] = result["inserted"]
+        scan_stats["filtered"] = dupes
+
+        return {
+            "total_found": len(all_jobs),
+            "new_added": result["inserted"],
+            "duplicates": dupes,
+            "stats": scan_stats,
+        }
+
 
 class DeduplicationEngine:
     @staticmethod

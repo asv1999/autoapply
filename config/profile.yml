@@ -1,0 +1,61 @@
+# AutoApply + Career-Ops Profile Configuration
+# This file contains your identity and targeting preferences
+
+identity:
+  name: "Atharva Vaidya"
+  email: "atharva.application@gmail.com"
+  location: "Phoenix, AZ"
+  linkedin_url: "https://linkedin.com/in/atharvavaidya"
+  portfolio_url: "https://atharvavaidya.com"
+
+target_roles:
+  primary:
+    - "Strategy & Operations Analyst"
+    - "Business Transformation Consultant"
+    - "Management Consulting Associate"
+    - "AI/Data Strategy Analyst"
+  secondary:
+    - "Solutions Architect"
+    - "Product Manager (AI/ML)"
+    - "Forward Deployed Engineer"
+
+archetypes:
+  # Your strongest archetypes (ranked)
+  primary: "Strategy & Operations"
+  secondary: "AI Transformation"
+  tertiary: "Business Transformation"
+
+narrative:
+  # Your exit narrative (founder -> corporate)
+  bridge: "Built and sold a business. Now applying systems thinking and founder discipline to complex operational challenges."
+  elevator: "Strategy and operations professional who doubled revenue as a founder, then brought that same rigor to Fortune 500 consulting. Looking to combine analytical depth with business transformation at scale."
+
+compensation:
+  min_salary: 60000
+  max_salary: 130000
+  currency: "USD"
+  negotiation_floor: 70000
+
+education:
+  - degree: "Master of Global Management"
+    school: "Thunderbird School of Global Management, ASU"
+    year: 2025
+    highlights: "Thunderbird Alumni Scholarship (60% tuition), GPA 3.49/4.0"
+  - degree: "B.Tech, Electronics & Telecommunications"
+    school: "Vishwakarma Institute of Technology, Pune"
+    year: 2021
+    highlights: "Research Scholar, KIST Seoul"
+
+# Score thresholds for pipeline actions
+thresholds:
+  auto_apply: 4.5        # Auto-generate everything for scores >= this
+  worth_applying: 4.0    # Flag as worth applying
+  evaluate_only: 3.5     # Evaluate but don't tailor
+  skip: 3.0              # Don't waste time
+
+# PDF generation preferences
+pdf:
+  format: "letter"       # letter (US) or a4 (international)
+  language: "en"
+  include_portfolio: true
+  include_case_studies: true
